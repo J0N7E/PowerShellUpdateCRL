@@ -21,7 +21,7 @@
         TaskPath    = '\'
         Action      =
         @{
-            Execute          = '$PS\PowerShellUpdateCRL.vbs'
+            Execute          = '.\PowerShellUpdateCRL.vbs'
             WorkingDirectory = "$($PWD.Path)"
         } | ForEach-Object {
             New-ScheduledTaskAction @_
@@ -174,7 +174,7 @@ try
             # Get filename
             $CdpFile = $CdpUrl.Name.Substring($CdpUrl.Name.LastIndexOf('/') + 1)
 
-            # Save file
+            # Save file in temp
             Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
 
             Write-Log -EntryType Information -Message "Remove old CRL `"$($CdpUrl.Value)`""
@@ -182,6 +182,9 @@ try
 
             Write-Log -EntryType Information -Message "Adding new CRL `"$CdpFile`""
             certutil -addstore ca "$env:TEMP\$CdpFile" > $null
+
+            # Remove file from temp
+            Remove-Item -Path "$env:TEMP\$CdpFile" -Force -ErrorAction SilentlyContinue
 
             $CdpCacheName = [Uri]::EscapeUriString($CdpUrl.Name)
 
@@ -206,8 +209,8 @@ catch [Exception]
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUQnDJKCZYZViGqj5xnBSArTyG
-# oYKgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUEB8M/cpG8qs+iIDfgYpDP1xZ
+# SamgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -338,34 +341,34 @@ catch [Exception]
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUKUq1MXKm
-# 10ZZ4iWIFaGdyMvFyK8wDQYJKoZIhvcNAQEBBQAEggIAIaGG4BM9V1jlxfN6mWne
-# zMdi8J1jQ69HDcyeld9YxtHukNqhdBfGws2I2i44T70OudPfC9nWXn2q8ly3JzUA
-# U90Xyqxj/vHvG9WFB2bLn+JLZGmDN++4VDut/J7xQ+y+iqCy2M1Zts/ACnq8OBEA
-# 1pRPjiUowupYsBrP0F5I+4iLTcsJUM/o0rsAOhzNXYDTuN7POFBeZCtXRUvQAFEd
-# iJSib1+9WfTRviZxaTFw4ZwZ9jseVJl5fb9nznpvAlD3aQO0m3MgXXxUdC+J5pd9
-# WCQQkqEzc48IUtBlTq1XwVHVs39sQ+0U304RIlqKusyoj49ozQiwSbSmbQPLDhaP
-# b0/nSzfDH1+2XjHQZGHMebyL5YS3ToJVWSzTdQZATd1Kuq+LVOd3p0k05uF/inlI
-# NPDQOaiY5B/JynyuV5vp/0Xyyg9Ct7V4TwhiGnbKiicKlM0QwM0KKOB2cQBsFq/K
-# Ml6eMYCjH3nS+iUuoVLPIxJZ0y+S9qvH2LdHpjnSsmwP7Os6Go0k3ZhnWrtCJmCy
-# 2xXMZt9EFuXOS9gJ2zbyEvkEGS64aEQCbuNbQRr3R9a4uVt7PeIVjaf44ysKdATK
-# 90/ElNgl+nfrf2XOD2NJMUhuskV02pY0ryE52NEIgS1dHERzFEzVk8eXX+ZP8Ix9
-# HfyR8E+YpiuULTMdcyJ2OqmhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQULvvJiep7
+# NzNCXDOGyZuSjdy0Y8gwDQYJKoZIhvcNAQEBBQAEggIAzb5GV0Grlw4lrHwZDAbz
+# S/WrhHfzPnSZ+H00SZWyD0HBULQsxv3cs9UWXW9IQySMKiei1UWndx40EmrnX/vg
+# fy3HVeX0Y8rzx0BqOlwd8AQc7Gw0bhUSBzHKCmXi7gEHUZZE+2t26MtjIUBnirsF
+# w4XeS75Gif4ZGs044TK7moeqyXH9H5rdkNtHlo+l8pPutId6p0Z5CHDRcJNpUXJZ
+# lRSVdx8Ugkvkk9atwIT3xjjaMafVUmX/583ododAFZqzIyVbC1T3CP8Px4z5u2Qi
+# vy57j82Qt7KHu0dgLsHnKKBX5/ziViKWeGL5yCtmnxxwToBrrJxE5ffVMXfQnN6G
+# EmWprvPRSS8d8i+JVS1bPXibTp/UZ07tC9aCjVyZL8DRMV9K5SCOG2E7PmrK4B0T
+# IdDM0LKvq+zss7iLrEr3nQYcXwtd7ehk+++79AeB9FlCDoLOepq6gj+G6lWcwlYR
+# 42OSHU5i4Qr6TQjcK+69pgSjT4Oksm1/ZxVt3Hi5RsWLELuoY0UCObx0jAun30pJ
+# kqj3EmuBXEJn0NxgogHaNFsZG/0VJtIq2jJQxCaivOd6/Hon5ymdnz4IyjoaZMQd
+# Dd9kAyh5fXxep9qeowuyRpfwEixhOKJEntlWJTMQC7yEru0WWDL2W1cF1rRn3LGw
+# ZO3B7aec1HxOvICQKZf3wVmhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDAxMTEwMDA2
-# WjAvBgkqhkiG9w0BCQQxIgQgc/2LvgswdLSB0fVGBqiv61PPLYnrhlXOx++GSn9O
-# OiYwDQYJKoZIhvcNAQEBBQAEggIABAjannrz6I6rqMEeNgpNe7xtWGNnEeJqzGWq
-# Az9g/zRbIXum0d7PZ7La3jVaO92R4A/zJvLa0IZRDF1fZcXIINXdVg3IKAzz5xgx
-# R7Tmol8eOSvzSytx7YjbEXKDfn+e7rp/s6tP+wLqufD8zGTEaMXyb1aPh6XIKwPz
-# LfZU67jFfB8nnUkjIjISoKD3P6LMBIvCB2ouDZl3kcGETv0UkqcMTzq1B6fOP8O6
-# ZKFQT0V7IyUm420zX7Wqn4PgQKtGI+RMw2AtuOIRYvBMEuXzeXjJ+uuNq6CJgf9k
-# 0XdKuzZyrJKwZTg8J7gIntV3UjjjkA9SV0u931owIGrkgmIteGWTfuMD7HGgcbRL
-# 05hJUZGInokUrpyA2NtmoPJdB2DhGqnKRcCzpz8caIhZVaeEE6P9NUZroph9QsWW
-# +ON6nPLdrjCF75VPxvWaE1bhz5ZHyI/oaKO57p0nQ0ySaUQiZKf6t7/5yGryg9KK
-# gV1OH4Z2iLjiPjzuqIDztUfdEUVSYWDYXrNgwCJm9BInQV22NlAf+RnbjUKXFU0k
-# eTl+6MdsXsSRMM48Q7i1mqp0JczOgxqLpbh1UFU0IsE6I0jXE3AuJn6ipUf2Mq2O
-# PMirSx9ZVjiY5atuBxgaFqXw2tiy78WUs3cHozltZ/lvNr9LHGjTLVfNng2yRiPT
-# Rpt/eKA=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDAxMTYwMDAz
+# WjAvBgkqhkiG9w0BCQQxIgQg6yGnRNs49RSaNk49obUkF+FIkXIGp8QobdWHBmxV
+# 3U0wDQYJKoZIhvcNAQEBBQAEggIAHBnFsHO5iOhkqaRkX7AcJWj3/0A6mzULJwQt
+# OZzrW2VYjlj57SR/1iiSXFVh9TN0VNC0s6+JvN5YSnTTGvJp96dyk3AV+CEp/lIY
+# FER8WPxAduNKKRLyr9LsKf4VX4HxbUrkjkuRufEYhP+MXO1kMzAKCHBDS1WKSlDL
+# 4oF5PwR2tHgXVz3M7LP16uh6Rz1smtu0rih9WxyFq0etm5g+zp/rK7aRrD/C41ht
+# dpbb+2QzRB7QrO2ebLnA9PfoNGobYi972SZO53f08aCCQ3gJfCznsVu7jLp+xVYN
+# IbdUpiE8eEfNbls2zJZ4dJNBXlwpC1cqA7YIaJ4+8KfQKXp4qGfNtRlnJgePW3bY
+# FClIuym0aSZ4tZNu5xIHruNck+X0c0EgftWHE6Iags1gTHtzRwSgWzc2x7zpxylj
+# ST2M3mYj65mgVjY54DriUy82xNO/8PSwqES8tkEl8vdNI5r/FYpWTXQtAb51pyEf
+# vi9ARDVHF22z6W76yKIU3qbEo/YitCqOb6MRWCLj/54Q0VQc/gFN2rvRc32thJ1t
+# 7boIwi/AVwJudn7xyABHTTb9o/lmIRMrwWQ96w+WWQ4D0Y4TR56wwAD9YJiMQXml
+# n1EQh2DmV0uA+l9s+TqryLpbNdnLuZXRSKhZWkpMEiSl4FMDSca9PEYWBb7RpLHu
+# 9GvPDq4=
 # SIG # End signature block
