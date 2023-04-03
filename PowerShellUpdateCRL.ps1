@@ -4,7 +4,7 @@
 
  .DESCRIPTION
     Itterate certificates for CDP and AIA extensions
-    Download CRL from distribution point, if successful remove CRL and OCSP caches
+    Download CRL from distribution point, if successful and new crl exist, remove caches
 
  .NOTES
     AUTHOR Jonas Henriksson
@@ -118,7 +118,7 @@ try
     # Itterate certificates
     foreach($Cert in (Get-Item -Path Cert:\*\My\*))
     {
-        # Decode CDP extension from certificate
+        # Decode CDP extension
         $CdpUrl = (New-Object System.Security.Cryptography.AsnEncodedData(
             '2.5.29.31',
             $Cert.Extensions['2.5.29.31'].RawData
@@ -128,7 +128,7 @@ try
 
         if (-not $CdpEntries.Contains("$CdpUrl"))
         {
-            # Get issuer CN from certificate
+            # Get issuer CN
             $Issuer = $Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] }
 
             $CdpEntries.Add("$CdpUrl", "$Issuer")
@@ -139,7 +139,7 @@ try
             # Use CdpUrl as index between hashtables
             $OcspEntries.Add("$CdpUrl",
 
-                # Decode AIA extension from certificate
+                # Decode AIA extension
                 ((New-Object System.Security.Cryptography.AsnEncodedData(
                     '1.3.6.1.5.5.7.1.1',
                     $Cert.Extensions['1.3.6.1.5.5.7.1.1'].RawData
@@ -160,7 +160,7 @@ try
 
         try
         {
-            # Try get CRL
+            # Try request CRL
             $Request = Invoke-WebRequest -Uri "$($CdpUrl.Name)"
         }
         catch
@@ -174,17 +174,32 @@ try
             # Get filename
             $CdpFile = $CdpUrl.Name.Substring($CdpUrl.Name.LastIndexOf('/') + 1)
 
-            # Save file to temp
+            # Save crl to temp
             Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
 
-            # Check if new crl
-            if ((certutil "$env:TEMP\$CdpFile" | Where-Object { $_ -match 'CRL Number=(\d*)' } | ForEach-Object { $Matches[1] }) -gt
-                (certutil -store ca "$($CdpUrl.Value)" | Where-Object { $_ -match 'CRL Number=(\d*)' } | ForEach-Object { $Matches[1] }))
+            # Check previous and downloaded crl
+            foreach ($Arg in "-store ca `"$($CdpUrl.Value)`"", "`"$env:TEMP\$CdpFile`"")
             {
-                # Remove old crl
+                # Get crl number
+                $Value = [uint32]"0x$(Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] })"
+
+                # Compare
+                if (-not $NewVersion -or $Value -gt $NewVersion)
+                {
+                    $NewVersion = $Value
+                }
+                else
+                {
+                    $NewVersion = $null
+                }
+            }
+
+            if ($NewVersion)
+            {
+                # Remove previous crl
                 certutil -delstore ca "$($CdpUrl.Value)" > $null
 
-                Write-Log -EntryType Information -Message "Updating CRL `"$CdpFile`""
+                Write-Log -EntryType Information -Message "Adding new CRL `"$CdpFile`""
                 certutil -addstore ca "$env:TEMP\$CdpFile" > $null
 
                 $CdpCacheName = [Uri]::EscapeUriString($CdpUrl.Name)
@@ -200,7 +215,7 @@ try
                 }
             }
 
-            # Remove file from temp
+            # Remove crl from temp
             Remove-Item -Path "$env:TEMP\$CdpFile" -Force -ErrorAction SilentlyContinue
         }
     }
@@ -214,8 +229,8 @@ catch [Exception]
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUJ87aSdYoIPcbNiTJFEpx4yfM
-# VQSgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUYgbZ7CPNwzdipZnIAPwTGn5T
+# tVGgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -346,34 +361,34 @@ catch [Exception]
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUf6OOdxEs
-# OtTiO6JG0XJeYpnhJPowDQYJKoZIhvcNAQEBBQAEggIAtOh/axHmzT8MQE5N55KM
-# YoSa44o7noPQLyAT5ZgeKgXW93iBz4nCYykiS7vhhXJtJbEi33TcBM1hS7n6nSFu
-# SIb4V9b8pv5C3JZNg31TrK0msJ+a6LhHk8QjcrdXxn3dJLAQQ3gnCgkEM0fOoz7g
-# 3Q9lmuKtdhfQetgmq9J9sk8msa/TlDUK4bsYEfXL9OzUirT1PvgmfgDVFwiN6Fjk
-# WN/hJIy0fpf1f2fHNzblJAP/BqpN2bMOnBHv4dVEqHxrSpCipFUV4JVvRb0+u/Dm
-# RKEdwFyseL3m3NAv7OrA8sIyUuMaKv09W8cuJG1gH8G4Yibx99seGYEXXBoj/tDp
-# cgNWC2hHKiuW96ctpuXpi+PbQIKHS6FHK+SD0lJCrUnSDyWg9KKBMy8gu2I1/UcY
-# ulH6PgMn/jP7OGCk3wer43vlw6aIns5VKbxiHXR7LMOlwhA7cIy58Q8BVmiH0Ln2
-# 40Xz3ThBhePowmWp7qRvlxEBdE8uOFb8EhV66e0Ua/ov5QGp2Pk8q+NWh9eUEEj/
-# WOuqluhUdo+MNM7j7PbBhy2sQJaficjeu+/kUpVc+FbTPg4d7yyFkY2oIoNYC9k7
-# Pw4veVVOZvecApN6Z+XCKm0KNmuB4ySPDyXq1GIYdqBI3D/jXaeAuHUTO/l6+zlG
-# EYkv1d1ud6MZx/4cSEt5SNahggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUSi5ln9QK
+# ITVgYWmDS5DhRyoN4o4wDQYJKoZIhvcNAQEBBQAEggIAYjlURSVERniPg9vESlcV
+# wBS1x+ZXzK6YYbZDkIEbYVQ0fb+mniy9vr+ZdAu3+uCPKxhUU2KcNbcJmT0dJYrS
+# pDw6saAx7uE6ppSGjia2027EmtVLweoOTiCV9kKp0KLSUDVDuqGhCvafQH/U0YUV
+# lNKtny7EGHP/JPCujv/22AaMPdWCDoxrvXmzYOJFy2BaJGopXK3knnQBbn54lVYh
+# n9VN4iCYUfWIzPJlASAsEymb1xEJaC2rC3HhTtUPsV4zkLhWK6NbRGvzr0gieypy
+# qn0LXvFDOAMCMjZlkK1Hd6Cv0+mqgneqINWaJflAS+fDEDw9uRypdBBB0zFUV5RM
+# Yoq6zuPo2eV0y5uOfWxAFuHgOhzfjnqoRNzgKomHOAHPq7XYhI1ljW6GDmyacvBZ
+# 9Bhaz2P/gvQynh5zZJeGue7BBWaz49Z/gEJ03Dn9w0CUfZXRUoXo4ly0mRwNRY+2
+# WJ8LGpQ9Pg8SW8xNw6U8ZslAiZEqE73mtv+iXab4OwkcAchwCUec8ge00wEWDAzV
+# sR0HHUksouN41QmbgYp/U6Bp0nmiJAYc6nRm/RLG4lAxJ4mZwJBXl1jpwOXPwRoY
+# ugbEgCKO1ZvALiaY7m5MHEfJlcJU40KrzdqLDBSeLykcrAGQavFK1eMFE7kFhWZ6
+# BChL2/AluZP/mSMiSRjxAgGhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDAzMTYwMDAx
-# WjAvBgkqhkiG9w0BCQQxIgQgyuz5lcNpq6WAxJw7Wjg3D5U6CQbEnXoqHAaWPIvC
-# zDowDQYJKoZIhvcNAQEBBQAEggIASvi5IV8Ec/y/FJRHO4xM+pUVx8g+pvF4IUDf
-# BBPcmKF+PRqSZTFnmYkvTDoWpfQu1IaEcgRwIFCeyyGAqtelTaw19W85bbycPghX
-# 13I8h6/fNCOUnvm/9s+dqd0rsmcKHY2yo8cS/TIfeuqsl+T5YwUEPhIS4G0/uEpW
-# 5rBbajdmrjRZ4lWxeIijxlyfNqx967iE9Lmi5jrYlmMDqCqb/YUlTLnDVXNOEkx7
-# X0UO3/4+IzedrRy81Hjes7ra4cOtg+94eJZcil8n7aPVIcV5tHnlAPpQiJsh2aUf
-# Diy91XzoBEx7WIrFMjqtKMuaaSP8Gyqo2BhI1BSv6uiUKSkY39AEF08eVxLMt1ep
-# 6bIW82UdYOy74NNzI33iuu3p8jFa7E5+PX0hACRwVGbi9Qbd91H61vePh19RMp2L
-# 4vss6pbnX4jEA/beeDGMsU8sLzkwN2SUIvztmEc/mHSUlTtJdNkrp/EebcCpmhJ8
-# ICa2KeV/PcD06l/cdrfcIpUeaDpqgYWtxBvSAoTOE6Jb0xjayCOkJxw2KHIJwal2
-# GuDmbwJkT7c3nR/cLe+hDVYomj3owTL2zwhOsLKAFd8+ziWIFKD0u0Z4sKg277BX
-# +k6gTrSk0ZSQKqenNAzoaRNKZd3MfVbaH5ljsQgCxb2XGGB0k8jXawu4lj8//xEr
-# /B+VdyQ=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDAzMTcwMDAy
+# WjAvBgkqhkiG9w0BCQQxIgQgVzom5agmbY8CXSDYxnCy6cRYoP8QaEsqbg7pWyBR
+# O68wDQYJKoZIhvcNAQEBBQAEggIApYsh3IFNc8re7H6AX6U5lN0QxVH8zlqIUOMG
+# gUUx0MvLizIrki0KvYaIxDLbY7voBOnLvUCn/26vNX78W+XZe8fbTIqcnEEkevac
+# FSr0oIBMemNRVjStRr2MV01URhkd4JdzI5pmP60Iabl/JCuvwycn7dQilcxZDhFs
+# dfi6tNcTYU141Af1XpAEldJsQr2L/z5UXjFrX7+pRPsvlWiXq+I4DqH2m00GlweH
+# k2TJ+ARNmwbkbMFfpOv4urcPT0tl7srqUVQoh9A3xLA91SSO1HGVdRfNOU8vIktF
+# OgjCKfIqp8ppM7fjeBv/skwjKFPrjkA5CfJLds3W8/fRGnVNu2ogd3dabZzRRTsu
+# 49rEiaeqqP5bgOMEOsu62TE2t63wLz/Leaeep1cn8jp+L6EgMjQhGms1vZut/Wo8
+# rF6rVkUDn4QN5b+rO5MC8YntcrXVg/WAwlpaYxS/4gLxVTTt98FNeWtmw9s54Vjv
+# w81s//SUO2uGVyJWBQWmqYlIDF6zGaREnPlsGj5SgMsLWgtZOMkc4SCyRbqx0Q8e
+# IuMvVgskKEjmjqfaZdacgJwbBaINrxpEz147xkB2MGnR7F9twlDQazISa4G8rzS+
+# SPt2Km2oV8CpsV4rmdfHb8HFcNDx75gZ3LkKyj3msRgY7rfAi5dQkpXPVaPsR/Qt
+# Ea9IjP8=
 # SIG # End signature block
