@@ -4,7 +4,7 @@
 
  .DESCRIPTION
     Itterate certificates for CDP and AIA extensions
-    Download CRL from distribution point, if successful and new crl exist, remove caches
+    Download CRL from distribution point, if successful and new crl exist, remove cache
 
  .NOTES
     AUTHOR Jonas Henriksson
@@ -177,6 +177,8 @@ try
             # Save crl to temp
             Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
 
+            $NewVersion = $null
+
             # Check previous and downloaded crl
             foreach ($Arg in "-store ca `"$($CdpUrl.Value)`"", "`"$env:TEMP\$CdpFile`"")
             {
@@ -194,23 +196,21 @@ try
                 }
             }
 
-            if ($NewVersion)
+            if ($true)
             {
                 # Remove previous crl
                 certutil -delstore ca "$($CdpUrl.Value)" > $null
 
-                Write-Log -EntryType Information -Message "Adding new CRL `"$CdpFile`""
+                Write-Log -EntryType Information -Message "Updating CRL `"$CdpFile`" for $(whoami)"
                 certutil -addstore ca "$env:TEMP\$CdpFile" > $null
 
-                $CdpCacheName = [Uri]::EscapeUriString($CdpUrl.Name)
+                # Remove crl cache
+                certutil -urlcache "$([Uri]::EscapeUriString($CdpUrl.Name))" delete > $null
 
-                Write-Log -EntryType Information -Message "Remove CRL cache `"$CdpCacheName`""
-                certutil -urlcache "$CdpCacheName" delete > $null
-
-                # Check if OSCP entry exist
+                # Check if oscp entry exist
                 if ($OcspEntries.ContainsKey($CdpUrl.Name))
                 {
-                    Write-Log -EntryType Information -Message "Remove OSCP cache `"$($OCSPEntries[$CdpUrl.Name])`""
+                    # Remove oscp cache
                     certutil -urlcache "$($OCSPEntries[$CdpUrl.Name])" delete > $null
                 }
             }
@@ -229,8 +229,8 @@ catch [Exception]
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUYgbZ7CPNwzdipZnIAPwTGn5T
-# tVGgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQU8CJTciQ11kIHjNOx6F8Fgp8i
+# Ec6gghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -361,34 +361,34 @@ catch [Exception]
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUSi5ln9QK
-# ITVgYWmDS5DhRyoN4o4wDQYJKoZIhvcNAQEBBQAEggIAYjlURSVERniPg9vESlcV
-# wBS1x+ZXzK6YYbZDkIEbYVQ0fb+mniy9vr+ZdAu3+uCPKxhUU2KcNbcJmT0dJYrS
-# pDw6saAx7uE6ppSGjia2027EmtVLweoOTiCV9kKp0KLSUDVDuqGhCvafQH/U0YUV
-# lNKtny7EGHP/JPCujv/22AaMPdWCDoxrvXmzYOJFy2BaJGopXK3knnQBbn54lVYh
-# n9VN4iCYUfWIzPJlASAsEymb1xEJaC2rC3HhTtUPsV4zkLhWK6NbRGvzr0gieypy
-# qn0LXvFDOAMCMjZlkK1Hd6Cv0+mqgneqINWaJflAS+fDEDw9uRypdBBB0zFUV5RM
-# Yoq6zuPo2eV0y5uOfWxAFuHgOhzfjnqoRNzgKomHOAHPq7XYhI1ljW6GDmyacvBZ
-# 9Bhaz2P/gvQynh5zZJeGue7BBWaz49Z/gEJ03Dn9w0CUfZXRUoXo4ly0mRwNRY+2
-# WJ8LGpQ9Pg8SW8xNw6U8ZslAiZEqE73mtv+iXab4OwkcAchwCUec8ge00wEWDAzV
-# sR0HHUksouN41QmbgYp/U6Bp0nmiJAYc6nRm/RLG4lAxJ4mZwJBXl1jpwOXPwRoY
-# ugbEgCKO1ZvALiaY7m5MHEfJlcJU40KrzdqLDBSeLykcrAGQavFK1eMFE7kFhWZ6
-# BChL2/AluZP/mSMiSRjxAgGhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU7/5vvu1d
+# LCYG+EWbJDbCFdnnX0cwDQYJKoZIhvcNAQEBBQAEggIAHWSHCtVNmssaZ5E5DTgO
+# iNYIgNd9HLtcnTTV9MSWeWs0VX6L4FTMSHA3G4dLDDxA1sEM+6lRUu3JaUdnEOV7
+# uOisZHLCe0tXj/POUkP9A+ALDyvR0gW8ykRkw3mpn44xZiAcOs2PmdYB3B8C4YFP
+# luziJAio08O4bqM3FBGA4TYUioW5FF5FEwEY8m0NMwNQaTJtG46p4wi0h7hHXLSv
+# 4NenpUhAddDlmaYqFA1GgTd9HRptcdwdUhzhpfep0wF3bh0gIziEhMLSmoKFjtyk
+# 6NPqlqsIGUVh7letjcfP9sSDhBMViJ8bXsfdJMVWAo/QzhHVxrAxCtsFBrsUgYsv
+# ocYA1Umc6E2wQOa9Xoq6Kzv9esIjZMUYAGlBWhOCKkpsXgAKRoF0guDvQ5usUuuI
+# pW0lmOoJZXzoOZ1jvxXxn+GWTPAH+yDK4e558NZOElYlkTPx4yrnKmBuRvuLJVHB
+# fDo0Y+Z8BKDb0UBaRgTdj4+Ogbst+MQ458zjPbjnpeSqs5Y4JpuzbA77qekgx8q5
+# FcX4gh6IsjxvyLw2kCl5bFASUYQoAYF3TiHLskhLONgEz0vzySSpjejb8vfHgS77
+# jZ/4idwkQq8Q/dCEnP5LNYDtIDt1DkSNd/Vq+X1cU024EJbW8EIrbjhswlAstsI6
+# 2xbsCpOJ5v1buBQNg0mkNMehggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDAzMTcwMDAy
-# WjAvBgkqhkiG9w0BCQQxIgQgVzom5agmbY8CXSDYxnCy6cRYoP8QaEsqbg7pWyBR
-# O68wDQYJKoZIhvcNAQEBBQAEggIApYsh3IFNc8re7H6AX6U5lN0QxVH8zlqIUOMG
-# gUUx0MvLizIrki0KvYaIxDLbY7voBOnLvUCn/26vNX78W+XZe8fbTIqcnEEkevac
-# FSr0oIBMemNRVjStRr2MV01URhkd4JdzI5pmP60Iabl/JCuvwycn7dQilcxZDhFs
-# dfi6tNcTYU141Af1XpAEldJsQr2L/z5UXjFrX7+pRPsvlWiXq+I4DqH2m00GlweH
-# k2TJ+ARNmwbkbMFfpOv4urcPT0tl7srqUVQoh9A3xLA91SSO1HGVdRfNOU8vIktF
-# OgjCKfIqp8ppM7fjeBv/skwjKFPrjkA5CfJLds3W8/fRGnVNu2ogd3dabZzRRTsu
-# 49rEiaeqqP5bgOMEOsu62TE2t63wLz/Leaeep1cn8jp+L6EgMjQhGms1vZut/Wo8
-# rF6rVkUDn4QN5b+rO5MC8YntcrXVg/WAwlpaYxS/4gLxVTTt98FNeWtmw9s54Vjv
-# w81s//SUO2uGVyJWBQWmqYlIDF6zGaREnPlsGj5SgMsLWgtZOMkc4SCyRbqx0Q8e
-# IuMvVgskKEjmjqfaZdacgJwbBaINrxpEz147xkB2MGnR7F9twlDQazISa4G8rzS+
-# SPt2Km2oV8CpsV4rmdfHb8HFcNDx75gZ3LkKyj3msRgY7rfAi5dQkpXPVaPsR/Qt
-# Ea9IjP8=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDAzMTgwMDAy
+# WjAvBgkqhkiG9w0BCQQxIgQgsFPRAY6zJafQG1CeOI8gvPmWgk9f6JdfJlHSA6+Y
+# HRIwDQYJKoZIhvcNAQEBBQAEggIAewhBkcdB9PFCGycrWmA25bBJk4ZEWOM5jW2v
+# dX++MAeXiSni3Bwh5oM8+qUcwAY96f8HJhjs6REgYGIElYFw6YFQy1Df3NV9UdtY
+# 8hJdbBaxuarY5XQlM3B4wx/6JvV6CUBjg8KP4Tz6eyvk5eUUBAt45S+ldT3M9x0V
+# ZdT7gHz8QsrDcT0iry9RQz4dSLigfrBJGTTLqI6ON85Xoal+imXhTFlhIU5ouWmR
+# aKa5ZyEDxG0pdxvdtwlc6CWAdJYC/8f3GRQ7QvWgyqW3GdvUlbLmG1ybpzEWXb0b
+# fFKTobZ8nO4G64exSBWCT4zCeDJ6Tdkq9PxSS3L4EUnn2/fqpiWfRRpglW5o4xjL
+# qhwt0F9f6pM3x1jXXEw8LwgV4EmFCoxWxN1wZyVbCAr7/8h1henpPkvU7ZMEFkIC
+# hvT+opNOoRdGkugIFv5CDGtX1MwrbrDjEvAhCnOP5QLOlOXYPJX+jEU5BIqAa4q5
+# QekTMK4JGrbv/k612szav2ANW3mrItmcb3hvZ/YHJcwCyZYUPXKujEMp+DbkGboD
+# vjBVnxYpWJD/CyoEdbD1YAZXjpXPV0PbOazZ3VQndou8j47jLlbJEkKqUq5v1roT
+# dEU9Qfh5FbIZKdt9QemNtYHx9vguC/NCUf7LKJUeIgVDyxJj6GpXGZxWz5PznA57
+# DzMdp68=
 # SIG # End signature block
