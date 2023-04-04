@@ -58,12 +58,14 @@
     }
 #>
 
-
+try
+{
     #######
     # Init
     #######
 
     $CdpHashtable = @{}
+    $OcspHashtable = @{}
     $NonInteractive = [Environment]::GetCommandLineArgs() | Where-Object { $_ -eq '-NonInteractive' }
     $SHA1 = [System.Security.Cryptography.SHA1]::Create()
 
@@ -136,8 +138,8 @@
     {
         param
         (
+            [string]$Structure = "Sequence",
             [Parameter(Mandatory=$true)]
-            [Byte[]]$RawData,
             [ArgumentCompleter({
 
                 $Structure =
@@ -163,7 +165,7 @@
                     $Structure.Keys
                 }
             })]
-            [string]$Structure = "Sequence"
+            [Byte[]]$RawData
         )
 
         if ($RawData.Count -lt 128)
@@ -186,7 +188,7 @@
             $ComputedRawData = ,$PaddingByte + $LengthBytes + $RawData
         }
 
-        # Get structure from argumentcompleter scriptblock
+        # Get structures from argumentcompleter scriptblock
         $StructureHash = Invoke-Command -ScriptBlock $MyInvocation.MyCommand.Parameters.Item("Structure").Attributes.ScriptBlock `
                                         -ArgumentList @($null, $null, $null, $null, @{ GetStructure = $True })
         # Return ASN1
@@ -252,8 +254,41 @@
 
         if (-not $CdpHashtable.Contains("$CdpUrl"))
         {
-            # Add cdp and cert
-            $CdpHashtable.Add("$CdpUrl", $Cert)
+            # Add cdp and issuer cn
+            $CdpHashtable.Add("$CdpUrl", "$($Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] })")
+        }
+
+        # Decode AIA extension
+        if ((New-Object System.Security.Cryptography.AsnEncodedData(
+            '1.3.6.1.5.5.7.1.1',
+            $Cert.Extensions['1.3.6.1.5.5.7.1.1'].RawData
+
+        # Get OCSP URL
+        )).Format($false) | Where-Object { $_ -match '\(1.3.6.1.5.5.7.48.1\), Alternative Name=URL=(.*)$' } | ForEach-Object { $Matches[1] })
+        {
+            # Create x509Chain
+            $X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+
+            # https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.x509certificates.x509revocationmode
+            $X509Chain.ChainPolicy.RevocationMode = "NoCheck"
+            $X509Chain.Build($Cert) > $null
+
+            # Get issuer, public key and serialnumber for ocsp
+            $OcspInfo =
+            @{
+                IssuerName = $Cert.IssuerName.RawData
+                EncodedKeyValue = $X509Chain.ChainElements[1].Certificate.PublicKey.EncodedKeyValue.RawData
+                SerialNumber = $Cert.SerialNumber -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }
+            }
+
+            if ($OcspHashtable.Contains("$CdpUrl"))
+            {
+                $OcspHashtable.Item("$CdpUrl") += $OcspInfo
+            }
+            else
+            {
+                $OcspHashtable.Add("$CdpUrl", @($OcspInfo))
+            }
         }
     }
 
@@ -271,12 +306,9 @@
         {
             # Get etag from header
             $ETag = $Head.Headers["ETag"] | Where-Object { $_ -match '"(.*):0"' } | ForEach-Object { $Matches[1] }
-            $ETag = $null
-            # Get issuer cn
-            $IssuerCn = "$($Cdp.Value.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] })"
 
             # Get old etag
-            $OldETag = [System.Environment]::GetEnvironmentVariable("$($IssuerCn)_ETag", 'User')
+            $OldETag = [System.Environment]::GetEnvironmentVariable("$($Cdp.Value)_ETag", 'User')
 
             # Check if to download crl
             if(-not $ETag -or $ETag -ne $OldETag)
@@ -299,7 +331,7 @@
                         $OldCRLNumber = $null
 
                         # Check old and new crl
-                        foreach ($Arg in "-store ca `"$IssuerCn`"", "`"$env:TEMP\$CdpFile`"")
+                        foreach ($Arg in "-store ca `"$($Cdp.Value)`"", "`"$env:TEMP\$CdpFile`"")
                         {
                             # Get crl number
                             $CRLNumber = Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] }
@@ -323,7 +355,7 @@
                     if($ETag -or $CRLNumber -gt $OldCRLNumber)
                     {
                         # Remove old crl
-                        certutil -delstore ca "$IssuerCn" > $null
+                        certutil -delstore ca "$($Cdp.Value)" > $null
 
                         Write-Log -EntryType Information -Message "Updating CRL `"$CdpFile`" for $(whoami)"
                         certutil -addstore ca "$env:TEMP\$CdpFile" > $null
@@ -331,43 +363,28 @@
                         # Remove crl cache
                         certutil -urlcache "$([Uri]::EscapeUriString($Cdp.Name))" delete > $null
 
-                        # Decode AIA extension
-                        if ((New-Object System.Security.Cryptography.AsnEncodedData(
-                            '1.3.6.1.5.5.7.1.1',
-                            $Cdp.Value.Extensions['1.3.6.1.5.5.7.1.1'].RawData
-
-                        # Get OCSP URL
-                        )).Format($false) | Where-Object { $_ -match '\(1.3.6.1.5.5.7.48.1\), Alternative Name=URL=(.*)$' } | ForEach-Object { $Matches[1] })
+                        # Itterate ocsp info
+                        foreach($Cert in $OcspHashtable.Item($Cdp.Name))
                         {
-                            # Set oid
+                            # Get sha1 oid
                             $OidCollection = New-Object Security.Cryptography.OidCollection
                             $OidCollection.Add((New-Object System.Security.Cryptography.Oid("1.3.14.3.2.26", "SHA1"))) > $null
                             $OidRawData = (New-Object Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension $OidCollection, $false).RawData
 
-                            # hashAlgorithm
-                            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
+                            # Set hashAlgorithm
                             $HashAlgorithm = New-ASN1Structure -Structure 'Sequence' -RawData ($OIDRawData[2..($OIDRawData.Count - 1)] + 5,0)
 
                             # Set issuerNameHash
-                            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
-                            $IssuerNameHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($Cdp.Value.IssuerName.RawData)
-
-                            # Create x509Chain
-                            $X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
-
-                            # https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.x509certificates.x509revocationmode
-                            $X509Chain.ChainPolicy.RevocationMode = "NoCheck"
-                            $X509Chain.Build($Cdp.Value) > $null
+                            $IssuerNameHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($Cert.IssuerName)
 
                             # Set issuerKeyHash
-                            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
-                            $IssuerKeyHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($X509Chain.ChainElements[1].Certificate.PublicKey.EncodedKeyValue.RawData)
+                            $IssuerKeyHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($Cert.EncodedKeyValue)
 
                             # Set serialNumber
-                            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
-                            $SerialNumber = New-ASN1Structure -Structure 'Integer' -RawData ($Cdp.Value.SerialNumber -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) })
+                            $SerialNumber = New-ASN1Structure -Structure 'Integer' -RawData ($Cert.SerialNumber)
 
                             # Ocsp request
+                            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
                             $OcspRequest = New-ASN1Structure -Structure 'Sequence' -RawData (
 
                                 # tbsRequest
@@ -398,21 +415,25 @@
                         if($ETag)
                         {
                             # Remember etag
-                            [System.Environment]::SetEnvironmentVariable("$($IssuerCn)_ETag", $ETag, 'User')
+                            [System.Environment]::SetEnvironmentVariable("$($Cdp.Value)_ETag", $ETag, 'User')
                         }
                     }
                 }
             }
         }
     }
-
+}
+catch [Exception]
+{
+   Write-Log -EntryType Error -Message $_
+}
 
 
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQU26ZhzoNDZLbHGxn64zAQW2A+
-# LCegghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUPkaY7r8KtDsza9hSwOO3dVt1
+# DAKgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -543,34 +564,34 @@
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQULVtJL9H4
-# TN+mbUi5xMXF37UfBzwwDQYJKoZIhvcNAQEBBQAEggIAJGpGbQxxuTvc5X5U89C/
-# B8Yh5Xvb2/W4uuD1fJL7fFj2WHomEzGgB2s9wbnRJ0MD4Ni7DPllpv9kqV6DZiNM
-# PecWU8iv46ERc4GnkiXkDL9Nc/CwgzwDsSLVvR6PIlXL1Wu4Ck89dkeJBc5NtXSA
-# +hP/wkKVI9ma6D0USZ/ZP/ocGb+fpACL+CYMbMhc2oTs5ISyzzG/k4WRlAgjNpDl
-# deWsC6+ezdyvYfdo7GScL/sUvGSoSKj7+HUEeHC9DZ6AdoT9/BXh9dQ8zabbWYEQ
-# 6eT1q1WpT249YmKB3RcWvgE6XB4wqRvrXP6f1WGJsyjRxFNMFk/TP/JDotev7S7z
-# yk2hGUd26OdjU67azr4COW/75w8Xkd75Ilxf86CdTuDlRrNf2YFraydrtdtufR8Z
-# FKyZRgz80IVhwFV+PpYo/p1xgWceHMqmMjzRmco/dwKouu3DGB8dVJbwJDqvM7Sc
-# NPbjDqZCxROsEVpc2b0x920/6QmTbbULn/hUBYtcpvgc2yvmyMya9KqhV4xcWyuy
-# RvuEBzGd9aH3yOByEc2LwA5lPIXOegHlhv4gPg5+jjFq+7l0UdfrEVNOwYpTXNwj
-# ZDdJJ3WH4ko0tUaOZY1VALt1ZjVlOZ3/pRZeTNy1VXvhn/cCcZG/fV9ceB9Kw0Um
-# W8OPb/dS1poVxqM4Jz6HrRahggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUvWSiSw//
+# Nq4G68ye6xIaon4reTMwDQYJKoZIhvcNAQEBBQAEggIAQwRt4k1YWRQ2UrbsQdwI
+# JsvJrHqN6Ic1WjnAUDBjXkZ/jWEZiXTQlegHAOe4EI5+I5aX2S881tLew8BSO/Mc
+# +d8Q/XRTTzDISqtwrPVIzHBkoa88wtFdCVZ9z55AwrtA1mUi0Y+FnY9PDNixwcQu
+# B2PqnCwrXbbOMLvPir/qH2ScDtKCfVNKaPsZUQfH4B0V1nZvS3kFXrh0rP8HLo9x
+# LQXcP5oXWeAVXKumZg7AB0XnCzprIFbiiyWlJbbPyOfZ08jIoLmbYO0PiJeegfXr
+# aqofXtVcJCHIkVNUx8IHu/80gE1J4LZ8heYhgumR7G10NUYwPFd8j9gcgoiKTQjU
+# AhWKQfiY7QvOrqk6cX9uTxxx+hC5b5uX9QdfN2i3mQ4f7c1YH32GzTcJ7CjWlg0D
+# JfqfXli2R2kkNvhkdXeJhiAkBYyKwJ6o1CoWQYUuuh/JNwpsIMwdLxs4xyK2z6Aj
+# +qmuOEROuMMpxo1SBQXcPvrIFjuzJoyK4y9c/HDXaUfxF0jfbAW04swV3R4CHhE0
+# ChqrhGhwCnMIk48fAMNVWTexHnrmnzF5Wrg5iQbC2LEqPdxYMYkmUfDbvXEGKyv6
+# a4TDXhGNp2+zT9iT7D0leOtpsSkWxb2KJZyR/UBSKMr7QtoAm3j5SIJH9B7CVLus
+# X3h9GXBzgvdfP/+T7340KOOhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTYwMDAz
-# WjAvBgkqhkiG9w0BCQQxIgQg/sVsvFB2KsQTkf2LrZKVnW9VjbKfCcOkNm3rTLDC
-# 2cEwDQYJKoZIhvcNAQEBBQAEggIAQsOMaKYI/cMbVU7YaIYYOemOwTmFhSzqQZoQ
-# mRigprn+TXIlVTWBUK8/J4x5pu0hrX33gY4Ybet0oWHm2RJSAjHKeOb4fV4VuKSx
-# 9ZckuGpibFFiXbx5eySgyA2ANunqd3a37rz68vxCs8NOXbEGnfFTAOJ14dyueUMg
-# 9TxbHKL572p6SSLOYtfaARilC5y5Vp3N4G1k9tesvefARo/CSO2fjaEwwOvMQ2zA
-# YpRsBQdptv+gvOdGgtpmLdiRD+tsRj756xUISw7YxYOPGck7mRJ+nheSPSxmGmgS
-# wut54i7/OhmEitRw2hnOiwP2Q/Y+s+Pm/g9tjD2GpRY8lOEOnaZFUN4rbDHihl/N
-# cpCXS4ucuoD6PRYxfFvYFh2pRJ0qWHs2ACdKHU4ppL6yc4ro4XsN8loSVvk470wN
-# 841OwaZRW5CLJsOP0oggI21Dp1GQ0QXdg8IJb5zPWko5vU5Ho8YewW2AemUCiuQF
-# i4tEUrfXg9iLtHIY2ZIEpcvmM5pdpzU5taxkPeVLGxDPvC4VpTLjfMKJiyA+BXY2
-# oDu877F7wSU1nzhjIt99O2jj4Wdmsk6xvWxMoNuyjUg1Du62o/PJOVecjnsXCvKa
-# 53z4Me0MUDdPSDT8erCDe56txU4WYASWyFOz77kivwG802/zWJrmQKTPfGGIzG+B
-# W3KTdlA=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTcwMDAy
+# WjAvBgkqhkiG9w0BCQQxIgQg6ngGQ1R1vFjFy6a2xTO5Tp0LFjIq9AZhMCj90Kh8
+# NF0wDQYJKoZIhvcNAQEBBQAEggIApTIr+w6QJ5Kj+WlSCPISokmTMsK7MrDRzYvQ
+# j5v4fmbaMQy5BCcawUw7BvwRxJvYzgwFrXBjHzY/ddTsdouMVL7TS/hVe5hF9H/n
+# lT0dKolKlgvDftWGrwNRULXvR8DxM4UymPhxghl8Xy4xKBjmDmV8jBoj7DtAhxB1
+# FgeWSvbz1HyIeCffjW9TH+bdoGIA6LqyjVWcMcAwj8JQVYv3fWT8mICLS7idpq48
+# cEh0LM5S1ym3+LYTgHPxa/rQl0eCZvD+z/DsFXLur1Pgp5B9r9+0kvgdezCedd1i
+# h3EbSBTeYDBMIXoSQFU8CHJ/ZQ/EQNszLMSuxwTmdvE89AH+iYqmLDGkvsWp0kbv
+# /hvKpMl1P+XGD1fWwN218vFQFOIepUn1N/+rtpGis+jbWJG/ON3wqEz0rru9WQv0
+# 6qK0JXU7q8E0KUK1xrbuqQFdZgixUdaUWyebJJjKxvIJmLZT1rDtuL5ucRtsq6AE
+# ywOuK3UrOJ05ijWorm9uzeZGQ/D5njzJDeKBNSwuUlNRqNElqA9PlkWFDbIQvtmz
+# wys3PYbioQw013tm8wDgccH4Qel8Rr87d6VnwSC406sjNqN99Lm/7DdUwldsr25U
+# NXrtfhL3NV4TxiSNVwkRX7bKq3z37DwLlnfJ0LVjxCT9xk7kasdiq6JJi8r/EcUP
+# fzaucHo=
 # SIG # End signature block
