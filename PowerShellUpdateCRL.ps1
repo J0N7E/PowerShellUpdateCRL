@@ -8,6 +8,7 @@
 
  .NOTES
     AUTHOR Jonas Henriksson
+    CREDIT TO Vadims Podāns for ASN.1 functions
 
  .LINK
     https://github.com/J0N7E
@@ -64,11 +65,62 @@ try
     #######
 
     $CdpEntries = @{}
-    $OcspEntries = @{}
+    $NonInteractive = [Environment]::GetCommandLineArgs() | Where-Object { $_ -eq '-NonInteractive' }
 
     #######
     # Func
     #######
+
+    function Try-WebRequest
+    {
+        param
+        (
+            [Parameter(Mandatory=$true)]
+            [String]$Uri,
+            [ValidateSet('Get', 'Head')]
+            [String]$Method = 'Get'
+        )
+
+        $Request = $null
+
+        try
+        {
+            # Try request header
+            $Request = Invoke-WebRequest -Uri $Uri -Method $Method
+        }
+        catch
+        {
+            # > $null
+        }
+
+        Write-Output -InputObject $Request
+    }
+
+    # https://social.technet.microsoft.com/Forums/windows/en-US/e86bdf17-8902-4f74-b5d4-7ca60b99e185/ocsp-issues
+    function Get-ASN1Length
+    {
+        param
+        (
+            [Array]$RawData,
+            [Int]$Offset
+        )
+
+        if ($RawData[$offset + 1] -lt 128) {
+          $return.lengthbytes = 1
+          $return.Padding = 0
+          $return.PayLoadLength = $RawData[$offset + 1]
+          $return.FullLength = $return.Padding + $return.lengthbytes + $return.PayLoadLength + 1
+        } else {
+          $return.lengthbytes = $RawData[$offset + 1] - 128
+          $return.Padding = 1
+          $lengthstring = -join ($RawData[($offset + 2)..($offset + 1 + $return.lengthbytes)] | %{"{0:x2}" -f $_})
+          $return.PayLoadLength = Invoke-Expression 0x$($lengthstring)
+          $return.FullLength = $return.Padding + $return.lengthbytes + $return.PayLoadLength + 1
+        }
+
+        $return = "" | Select FullLength, Padding, LengthBytes, PayLoadLength
+    $return
+    }
 
     function Write-Log
     {
@@ -76,11 +128,12 @@ try
         (
             [ValidateSet('Error', 'Warning', 'Information')]
             [String]$EntryType,
+            [Parameter(Mandatory=$true)]
             [String]$Message
         )
 
         # Check if powersehll is started as non interactive
-        if ([Environment]::GetCommandLineArgs() | Where-Object { $_ -eq '-NonInteractive' })
+        if ($NonInteractive)
         {
             Write-EventLog -LogName Application `
                            -Source 'PowerShell Update CRL' `
@@ -133,21 +186,6 @@ try
 
             $CdpEntries.Add("$CdpUrl", "$Issuer")
         }
-
-        if (-not $OcspEntries.Contains("$CdpUrl"))
-        {
-            # Use CdpUrl as index between hashtables
-            $OcspEntries.Add("$CdpUrl",
-
-                # Decode AIA extension
-                ((New-Object System.Security.Cryptography.AsnEncodedData(
-                    '1.3.6.1.5.5.7.1.1',
-                    $Cert.Extensions['1.3.6.1.5.5.7.1.1'].RawData
-
-                # Get OCSP URL
-                )).Format($false) | Where-Object { $_ -match '\(1.3.6.1.5.5.7.48.1\), Alternative Name=URL=(.*)$' } | ForEach-Object { $Matches[1] })
-            )
-        }
     }
 
     #######
@@ -156,81 +194,95 @@ try
 
     foreach($CdpUrl in $CdpEntries.GetEnumerator())
     {
-        $Request = $null
+        # Get cdp header
+        $Head = Try-WebRequest -Uri "$($CdpUrl.Name)" -Method Head
 
-        try
+        # Header request successfull
+        if ($Head -and $Head.StatusCode -eq '200')
         {
-            # Try request CRL
-            $Request = Invoke-WebRequest -Uri "$($CdpUrl.Name)"
-        }
-        catch
-        {
-            # > $null
-        }
+            # Get etag from header
+            $ETag = $Head.Headers["ETag"] | Where-Object { $_ -match '"(.*):0"' } | ForEach-Object { $Matches[1] }
 
-        # Request successfull
-        if ($Request -and $Request.StatusCode -eq '200')
-        {
-            # Get filename
-            $CdpFile = $CdpUrl.Name.Substring($CdpUrl.Name.LastIndexOf('/') + 1)
+            # Get old etag
+            $OldETag = [System.Environment]::GetEnvironmentVariable("$($CdpUrl.Value)_ETag", 'User')
 
-            # Save crl to temp
-            Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
-
-            $NewVersion = $null
-
-            # Check previous and downloaded crl number
-            foreach ($Arg in "-store ca `"$($CdpUrl.Value)`"", "`"$env:TEMP\$CdpFile`"")
+            # Check if to download crl
+            if(-not $ETag -or $ETag -ne $OldETag)
             {
-                # Get crl number
-                $Value = [uint32]"0x$(Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] })"
+                # Request crl
+                $Request = Try-WebRequest -Uri "$($CdpUrl.Name)"
 
-                # Compare
-                if (-not $NewVersion -or $Value -gt $NewVersion)
+                # Request successfull
+                if($Request -and $Request.StatusCode -eq '200')
                 {
-                    $NewVersion = $Value
-                }
-                else
-                {
-                    $NewVersion = $null
+                    # Get filename
+                    $CdpFile = $CdpUrl.Name.Substring($CdpUrl.Name.LastIndexOf('/') + 1)
+
+                    # Save crl to temp
+                    Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
+
+                    if(-not $ETag)
+                    {
+                        # Initialize
+                        $OldCRLNumber = $null
+
+                        # Check old and new crl
+                        foreach ($Arg in "-store ca `"$($CdpUrl.Value)`"", "`"$env:TEMP\$CdpFile`"")
+                        {
+                            # Get crl number
+                            $CRLNumber = Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] }
+
+                            if (-not $CRLNumber)
+                            {
+                                $CRLNumber = 0
+                            }
+
+                            # Convert from hex
+                            $CRLNumber = [uint32] "0x$CRLNumber"
+
+                            # Set old crl number
+                            if (-not $OldCRLNumber)
+                            {
+                                $OldCRLNumber = $CRLNumber
+                            }
+                        }
+                    }
+
+                    if($ETag -or $CRLNumber -gt $OldCRLNumber)
+                    {
+                        # Remove old crl
+                        certutil -delstore ca "$($CdpUrl.Value)" > $null
+
+                        Write-Log -EntryType Information -Message "Updating CRL `"$CdpFile`" for $(whoami)"
+                        certutil -addstore ca "$env:TEMP\$CdpFile" > $null
+
+                        # Remove crl cache
+                        certutil -urlcache "$([Uri]::EscapeUriString($CdpUrl.Name))" delete > $null
+
+                        # Remove oscp cache
+                        #certutil -urlcache "$OcspRequest" delete > $null
+
+                        if($ETag)
+                        {
+                            # Remember etag
+                            [System.Environment]::SetEnvironmentVariable("$($CdpUrl.Value)_ETag", $ETag, 'User')
+                        }
+                    }
                 }
             }
-
-            if ($NewVersion)
-            {
-                # Remove previous crl
-                certutil -delstore ca "$($CdpUrl.Value)" > $null
-
-                Write-Log -EntryType Information -Message "Updating CRL `"$CdpFile`" for $(whoami)"
-                certutil -addstore ca "$env:TEMP\$CdpFile" > $null
-
-                # Remove crl cache
-                certutil -urlcache "$([Uri]::EscapeUriString($CdpUrl.Name))" delete > $null
-
-                # Check if oscp entry exist
-                if ($OcspEntries.ContainsKey($CdpUrl.Name))
-                {
-                    # Remove oscp cache
-                    certutil -urlcache "$($OCSPEntries[$CdpUrl.Name])" delete > $null
-                }
-            }
-
-            # Remove crl from temp
-            Remove-Item -Path "$env:TEMP\$CdpFile" -Force -ErrorAction SilentlyContinue
         }
     }
 }
 catch [Exception]
 {
     Write-Log -EntryType Error -Message $_
-    throw $_
 }
 
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUTzZ7MErsBM8N8Gy6GzbBFizr
-# 5xKgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUyIAd0UfuMmKj79XL8XZA1OlT
+# 4hCgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -361,34 +413,34 @@ catch [Exception]
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUiYMZQNDO
-# MgjATywegWmNPEAGncswDQYJKoZIhvcNAQEBBQAEggIAh5V4tQGiyGBz57TEr+kW
-# JmQEBfD78PLfiQ3JT4UGlvmdGHAeCP98sNoQU4G6/eQQA9ChSP/930VyiZiPlx5g
-# lBUuy2cHS/IJQTXu2P7j/FUgg6HaBI9vhlSsofiRHxFjXap5O0Tz8yuL1wCayksg
-# nBBNIjx2Gt1cXW0+7WVgx1ESDFgBr7U2Q28yp87+mtT+G0Oc32V0bUSlsYTnQ32j
-# 1p6CbdAerFrxQw926vAYlJxBEFgFgeVg89rZ+ng39872OhAiz/nO1NTJmmsmBu4B
-# 0HkZ8t59K1P7LtRrBERz3N7MfL1frykhrYAN/sVOHA+aT7zb65lPDrf6KGpIJWB5
-# 1EoKqItb+/32XKZ8mX7tLj/RgMH2p02zNoIn7x0IOAyR5SUjgS62LjdAiU5HTfAu
-# UNfra69jRRgmERiH9+7OAzXQY0hU7iBqZCtDmFp9nrYDBSHcH+KDY1pDPVHTqhMx
-# uHrqI2PEmjfFX/RKkGQ135fUJpTNITH5q+v5W0Fatb/ud6t/jCqC9wRUo+eTT0vr
-# lbGSjBqXvT1ag5gi+c6Y+XNWOmG/rp7dLpBRpVZKapSMN5bUK7CH7rngKuWZrkA/
-# JAZAp7xk37+Pn7wUZxcSguxoEKIO8ZObzEGJi+ZDZtezyncDOGT7zbf+l5VqYi/h
-# Ph9RkZYB4jy1vsmBffQXzi+hggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUAlecqLHl
+# HViPEnotGFDANMbQwgkwDQYJKoZIhvcNAQEBBQAEggIAY0ecR6IBcyZVHE0VUbxx
+# EpY4xjAR0RXoAlvwOI5k6vAyr4k5L9vbq/rRome+/V/jiDNjWqkl/Vo7OTiKdM/X
+# 6mk6XZReizmX7fdK6zZGR5jLyQsiwvyyATBeBqNLjCJF6lUgnJjVMhXkr7Q7gWLk
+# H+YZaGOVkzCY64XZXEjEySYu0rOHUCKkJgTUnnCxfKU7ECjCsN5uI1HGcQLDMs34
+# o4B5c0mVgxDKT4YMtTSTUYQjPEOTcvfsdu9o0Dcx2epw8ef9i9Cwg8qJFuoa2ahH
+# Ep9SbqgwokpA56nFsycPR1YQC3zUuI5FUEdO+qOvpsNIbtA8S0usypuBRWBbgnhm
+# ui6XbuzAk13q1glatYvslT+Q2Du7ttewhs5OoAqxjuI/LFkdjPI99G0NDq0XP3gx
+# iJzuSoXY+ieD11KeXxcyHir8xlCIYzPnSEvNjlW07/QPNTcqCHu//7edZ8Eb50dr
+# SSsPghcMyDcsZ2ASblhNlphaX7Sq0newoAJtiSkOUUOigJrbQFJz3Le1WXjJO5X7
+# L7mwUFGjprvtA+Zv3JVWI8VjHvGLDsx09kEtKdO93GaoCFONHddl80vQgo6t7j2y
+# KgF1ND90nUtafEPGA9wMAn8OGg2VUBJlGuuBzDbJklqRkDfqAYPufYX6/E9+bme4
+# WUa6wrBXroVeAybNaHz7qyOhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDAzMjMwMDAz
-# WjAvBgkqhkiG9w0BCQQxIgQgpRVT/pGdY1TjFRi5i5RWgEIW02FNwFqXJXnxdF+r
-# lWEwDQYJKoZIhvcNAQEBBQAEggIAFQXTpO5yVYQEwg+vlz8Ag677+YzT7viqZO0R
-# EHjjz53D+ZIM5dioQVr4DX5eUaxjUJ5/hK5CDsDwecQJUuJtjzE7Hy6YXT+tKunm
-# yEE0leoXH0g1XgXqrOuLBX9NmGKjHHyuxxJDLwvTEAPKYxyGyVAS3KSzIDFFMWjo
-# k080c0fLi4eKh3zDRm6hXZUphOh4Xt385ZV7rQtfngUnR0ozfY5rxoTxrXVCJHYC
-# KYvRUGQ0AvvYZK6ffXX6yTftNgoxmQVdLbWZBaj2+pcy+I9MUjCdyN4/hZ4fjGqX
-# 9dlYQ8k50uT3Ycl8UAxI96R7pdDNJ0B0byAx9DA4Uc6//zWxZb6oBLJZkhlVt4lU
-# VZ5/5+3cG1p/z9GEI6u5VVQPShET/OxganGfMdgCtLDoXh+1rhLKzea/YA8tP0kN
-# WVhy8ZK3W9dWHph89JRoNprcdYGbZ9bV+KnxIQW9NYQdVgwIfFgZTAlEUkNVOBaN
-# 9lthQz/vxFCK75FiFJWfGN1SOoWi8Zg5DrrUiJMwBcrsxLmXFBKceftb2WJDF+J8
-# 2RfxMvha43mCx/EJGLhKarp6e/gxgRCb0oMT2hrNtibKpW4IIVqy24WzhvdJZUky
-# ZZ8y/tNVOKT6MB9t7Q/SJ+TJ0zcYwfxL3gl70frxRmZMuvBMnzkO6omwDi7+mhg0
-# Y9SkgUw=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTIwMDA2
+# WjAvBgkqhkiG9w0BCQQxIgQgZsH5Tu6I4AsN7egrQgVCMJvTqmLKF+9NO4E2KA5B
+# 3QkwDQYJKoZIhvcNAQEBBQAEggIAPWmmjHUxQnNICjaFeUeUcbZT8QkYwpa5Isat
+# nUnASST7YVgReL/fzoId6h/02YMWJB4lac7CPLX0mCgwdsYWWX4dxc44YfrJWTXS
+# I/0wsJFi/RKMbuX9HUrtLNx4Uy3HxGTzdtHoMo1dPQQnFWIp5sdT/sF9Uz2Fqe7a
+# 2z9queQRlENvimMI2SMxz5VRPhBJ88HE34D+ALvdoOSjmG137cik1XAbnoJJnxHg
+# 0ATerrpIt1UShpFbw6TFBRGSzjD4qo8IFWXl4tbVXL0Zrhewy2o2TsUsnnSZgy5J
+# QJS4thfNzbioyoTuidSIyWz9ulNAVlbG69YqlGGXwo0cg+wuizntttDXd8kiNMho
+# aWPAKb+w+yux1VUAWx3ERibaxpaYRnJY+XH1BSnKNEZM0RhjbMYhN3GsOYnr3WF4
+# InmqYUEjCsFHgKoTuiLAD7X/mFVs+GG6EJEuruLOg2LBbp+63ThyD26B2JMXMRU7
+# ajNnH9coalPhhNN1ItxkxOLdampjnZJx23eFi7D4JzKZLKMgodJgy02pmSpIJypL
+# j1uTRiqhu0RwPIQ05Q1xdvWZlm3RUklhGCcXPAFF5Px+C48UvGiY4LMUn2lt5Bir
+# +s8cxUi/rBpKfK+TbT3QU/reV8IVvWNLEfHu+xFELwL6TLLFUVMOKImhud6JVC/T
+# lE4MAPI=
 # SIG # End signature block
