@@ -8,7 +8,7 @@
 
  .NOTES
     AUTHOR Jonas Henriksson
-    CREDIT TO Vadims Podāns for ASN.1 functions and ocsp encoding
+    CREDIT TO Vadims Podāns for ASN.1 and ocsp encoding
 
  .LINK
     https://github.com/J0N7E
@@ -67,7 +67,7 @@ try
     $CdpHashtable = @{}
     $OcspHashtable = @{}
     $NonInteractive = [Environment]::GetCommandLineArgs() | Where-Object { $_ -eq '-NonInteractive' }
-    $SHA1 = [System.Security.Cryptography.SHA1]::Create()
+    $Sha1 = [System.Security.Cryptography.SHA1]::Create()
 
     #######
     # Func
@@ -140,7 +140,7 @@ try
         (
             [ArgumentCompleter({
 
-                $Structure =
+                $Structures =
                 @{
                     'Boolean' = 1
                     'Integer' = 2
@@ -156,11 +156,11 @@ try
 
                 if ($args[4].GetStructure)
                 {
-                    $Structure
+                    $Structures
                 }
                 else
                 {
-                    $Structure.Keys
+                    $Structures.Keys
                 }
             })]
             [string]$Structure = "Sequence",
@@ -192,7 +192,7 @@ try
         # Get structures from argumentcompleter scriptblock
         $StructureHash = Invoke-Command -ScriptBlock $MyInvocation.MyCommand.Parameters.Item("Structure").Attributes.ScriptBlock `
                                         -ArgumentList @($null, $null, $null, $null, @{ GetStructure = $True })
-        # Return ASN1
+        # Return
         Write-Output -InputObject (,$StructureHash[$Structure] + $ComputedRawData)
     }
 
@@ -245,12 +245,12 @@ try
     # Itterate certificates
     foreach($Cert in (Get-Item -Path Cert:\*\My\*))
     {
-        # Decode CDP extension
+        # Decode cdp extension
         $CdpUrl = (New-Object System.Security.Cryptography.AsnEncodedData(
             '2.5.29.31',
             $Cert.Extensions['2.5.29.31'].RawData
 
-        # Get CDP URL
+        # Get cdp url
         )).Format($false) | Where-Object { $_ -match 'URL=(.*?)(?=$|\s\()' } | ForEach-Object { $Matches[1] }
 
         if (-not $CdpHashtable.Contains("$CdpUrl"))
@@ -259,18 +259,16 @@ try
             $CdpHashtable.Add("$CdpUrl", "$($Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] })")
         }
 
-        # Decode AIA extension
+        # Decode aia extension
         if ((New-Object System.Security.Cryptography.AsnEncodedData(
             '1.3.6.1.5.5.7.1.1',
             $Cert.Extensions['1.3.6.1.5.5.7.1.1'].RawData
 
-        # Get OCSP URL
+        # Get ocsp url
         )).Format($false) | Where-Object { $_ -match '\(1.3.6.1.5.5.7.48.1\), Alternative Name=URL=(.*)$' } | ForEach-Object { $Matches[1] })
         {
             # Create x509Chain
             $X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
-
-            # https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.x509certificates.x509revocationmode
             $X509Chain.ChainPolicy.RevocationMode = "NoCheck"
             $X509Chain.Build($Cert) > $null
 
@@ -329,31 +327,31 @@ try
                     if(-not $ETag)
                     {
                         # Initialize
-                        $OldCRLNumber = $null
+                        $OldCrlNumber = $null
 
                         # Check old and new crl
                         foreach ($Arg in "-store ca `"$($Cdp.Value)`"", "`"$env:TEMP\$CdpFile`"")
                         {
                             # Get crl number
-                            $CRLNumber = Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] }
+                            $CrlNumber = Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] }
 
-                            if (-not $CRLNumber)
+                            if (-not $CrlNumber)
                             {
-                                $CRLNumber = 0
+                                $CrlNumber = 0
                             }
 
                             # Convert from hex
-                            $CRLNumber = [uint32] "0x$CRLNumber"
+                            $CrlNumber = [uint32] "0x$CrlNumber"
 
                             # Set old crl number
-                            if (-not $OldCRLNumber)
+                            if (-not $OldCrlNumber)
                             {
-                                $OldCRLNumber = $CRLNumber
+                                $OldCrlNumber = $CrlNumber
                             }
                         }
                     }
 
-                    if($ETag -or $CRLNumber -gt $OldCRLNumber)
+                    if($ETag -or $CrlNumber -gt $OldCrlNumber)
                     {
                         # Remove old crl
                         certutil -delstore ca "$($Cdp.Value)" > $null
@@ -376,10 +374,10 @@ try
                             $HashAlgorithm = New-ASN1Structure -Structure 'Sequence' -RawData ($OIDRawData[2..($OIDRawData.Count - 1)] + 5,0)
 
                             # Set issuerNameHash
-                            $IssuerNameHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($Cert.IssuerName)
+                            $IssuerNameHash = New-ASN1Structure -Structure 'OctetString' -RawData $Sha1.ComputeHash($Cert.IssuerName)
 
                             # Set issuerKeyHash
-                            $IssuerKeyHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($Cert.EncodedKeyValue)
+                            $IssuerKeyHash = New-ASN1Structure -Structure 'OctetString' -RawData $Sha1.ComputeHash($Cert.EncodedKeyValue)
 
                             # Set serialNumber
                             $SerialNumber = New-ASN1Structure -Structure 'Integer' -RawData ($Cert.SerialNumber)
@@ -435,12 +433,11 @@ catch
    Write-Log -EntryType Error -Message $_
 }
 
-
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUT/L1asgR/yXMELaEitzqOlts
-# 4q2gghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUa34tft4w7ECG/HlifBqrqQcn
+# RTugghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -571,34 +568,34 @@ catch
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUXjOyoRhq
-# mch4MPvgaaSQjsCZk/QwDQYJKoZIhvcNAQEBBQAEggIAGESJsxUs0X2QHs0o1JCa
-# YHPmFvNQT339GTsmcMMO+Ay81FjmkOTjTFO+2GWs/5cDfhgjMbeRHCVuUZsrvBZy
-# lyFmtHH80zvAzyjvKZ7QJkyOYhMp+RPORRWHnsSLCAk5md3Tzosh8CmDWdHPj2dX
-# IwaTGDERGWmY50Vi+/b8to2ZsA7HLfu5H13P5M1JhCCNbzatuwGneixpiIzhC+/R
-# 1VUhosqRmTNOT9GYgkdtNhsb+U8wcXCWinxyTPMw5M6jFSr1+75SZ24j9TozQMqD
-# AH+/M2zYxn9Tkix8X5j8NHUsIT+4gXwowgi5uWZeUe1bH/hIPk28QqI5d7/VmFN3
-# WAa+RU33puxz1N7yYxm1yZxO8sd+XtM9Kl9i7hoS6PYrb7xu1SNj1mnhcWmJcN+n
-# vgJuYfPFppsEoOf9QsXvXUbYFmNkChJ91WT/NH4oAHUtNBDhbrn6w7AbRX3qI61v
-# MyWAwQcTevMlSDEJR+UNzwh/vzGMiTU8+/FGtqaAuKEf6JOf89kAeVYv5zbZnc6p
-# sUB8Uo/zH3hQq7NR6ElnBx6Y1fuo8wknk1W2ry10Ulna6rMAW6MXoghZhQdlck1A
-# /6WgTSAc6v0n25TZwT7+yixjBmfHIDevl8r/t9kYt/gs/9hCcxamAg1OvB6i2sml
-# iwFbvDpst/WCFzF2/NEHCyahggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUKr4nGgD/
+# dQ9F0NERdWu1HMwuCXcwDQYJKoZIhvcNAQEBBQAEggIAqai6S/xCjOQ/sRA5LpdQ
+# ToNSVj5NnQEOZc5HfWRj0VNpCj943yhvSqL/8wDebFCwWZAm3Vzwm4e5gx+C6td9
+# NfJ0K+z42yOYBtqC3glb7xQzz8Vq2I2eBq7S5YVepqy7HWZLpXE7yh2EiaSufFHY
+# WdA0ZmeDgsHr9q4TpFsE6271raU/zdGs5PvkvaMHgOremNypsKtgQo+C7xTmMYH8
+# XILK/L6FR+jp8XJI2JnpKmZdtbmn/KBcll3+hPocII3ad90aiOGuPScrT6q1Mzg1
+# gZ3sbxZNelgfnBfoirR6OL+qFpSIEAaHtHah0qkTosf7603KUvKnjllSv60LKL3T
+# MjpXVBvDvKEGu0pxb6jzmFuvXiqwRzJ5QPYlIA0flohF45Kl5fz2pPFvuT/8UWU9
+# Xc5/JHUjxI8Cd4MRLxGm2zSPz3ZhO1myukALp7MzvrkMWvUeESvo/jAlIVaHybkf
+# 6vMS8TIb4MRHPIb63s9zDoVGrcfwzQnd3HU3NIDL6rBZXPd3uy620TDOJo5Nya03
+# oIid8InxVPd/RnlcgP20X3Jzm0SfXTnq5JJEDHJM2uvEkZhQhRHdi3QezhTUodHK
+# Jgh/tIS2Yf5Yp8sZTavj54sW6w82NsiWuVHFa6fkB15LhDEHRPf5oOvlxY8GyJeT
+# +h4F6A11Rxgj7Y9NpeucgX2hggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTgwMDAz
-# WjAvBgkqhkiG9w0BCQQxIgQgvwZKKKkLGTcOK+X4I7trkCXgI4O0vjrD1mkgjWMb
-# +JQwDQYJKoZIhvcNAQEBBQAEggIAgdooDEWdGMgmh0kNi6BULiUpC8XScxpDFuMs
-# HUCe+oIZxcuWHRHVlTwLZAU7B4O6ajtpnR/UOPpbu0/BUic8Qfz/QYz8WSdV844s
-# W5OHe7LGZNcncBr2IwzNaRL+9ndUJ45+BEelXrHixViIuh9P3VUrQzkYQ52m9p3W
-# nnrn65X8pff+XszRuwVyv67TrRRhT0irtooAamYweQjMxMSEVpdhsVTlQN80ZLEB
-# BrwMNRSKcWPyVnTum1nk2sWVHlsL/C1L/jd5Y1SkPgbGck/I5QiaQ1jiLhhzSMn8
-# DH1+LMz0IFF5XthkG6DVEl8y9SgnqwE3YLbRd8L8rUiHW0uiojmGk/4RD96htnkC
-# pQgOwPKxKRUsZF5lWp7bxZL8KlRwJADE645zcQuejTAobDmKRWUg1wQqO2B/jqgx
-# aU2+vrEhlibIkvflg+oBffoXQGyvphWssT9j9AugfsvN4HYmCFCBhtq29+fQqvB5
-# nbMZQ+en3u2rQXEcd+aJ1nlqNTZdiyiDMPAHOd7qLekW3qXP1A6uwEKjBr+nJtmP
-# BRfW79oa1mKtdu6Yn+TdloBLy5ekusMn0Y7A18I07I5wfuPHwjwpXQGsPoZ/pGHn
-# ncOI87ve7p76kwmRyFnbOovgNIwdHaOG5VOp42usrhiQMJGOc7VVIsm8Ux7v6I08
-# UiQfqBI=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTkwMDAy
+# WjAvBgkqhkiG9w0BCQQxIgQgxg9dzvieH6gQUK6zl576ZmvOVgjbgSqb7tEhVFAm
+# J70wDQYJKoZIhvcNAQEBBQAEggIAornieqUTjHkUjaXqhArwqYiB5UG/0IACkURo
+# fNcfYxJ9S0rvMfniqiBqhaH7sQvCPF6ThhmYkiUNJIo/pyjNNm0TgoHnML7YrSD2
+# DzsZuSJ34xlGu5Ta0/67RmZH0eSNp6MTd0gYn/gw1tfpp9NMeUF96cLvc72mUeEp
+# 3teMw6wrwMjzWX0KH9bmUVESEdnBCL4mSW6PD4wzRlKzZaL4eJxtgEa0Lp7fIzjJ
+# s8+Tkbu9mYLvubsSFcgDj3iUH8ZCY4hp2ePxczSX4P400l0EUnEfVMeOYG4rsFnc
+# Jyq7M+YJdXtJ43ipGTJeSfj3GNxPM2xQBLbKzk2HIeTvyCxl11Rri0OBwX+YVyZo
+# o2lmYfJfb01n+ORwNuG5eEU6OsxkY/dccndMyWy+jheUbKH74WgA5iHh9lOVF00n
+# ACfg7uwD5q8H+hDvyhb1V4r7zhDN92jc6uVBR/scQyBNkkrAsPcQ8wbbj+zha/ww
+# /dyiHa3LW0g3PS2kLSXq/wpwx374ey91G3gFJta6cmFYWdSMOtQ6KgFm2skzPnc4
+# yTFVaPtGa4mgmQMy4iz1SP10kmLNfguQRWQGy2IiGwlnzbTJu0HzGNmFVvTKniLa
+# lN1wXJBpzsMybIrnZluoPL2BXN2Q5EHObPEENc8MLz13Qhv8zbSluAd/5Vb0/L2d
+# BX8FBYI=
 # SIG # End signature block
