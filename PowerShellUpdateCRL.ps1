@@ -64,8 +64,10 @@ try
     # Init
     #######
 
-    $CdpEntries = @{}
+    $OcspArray = @{}
+    $CdpHashtable = @{}
     $NonInteractive = [Environment]::GetCommandLineArgs() | Where-Object { $_ -eq '-NonInteractive' }
+    $SHA1 = [System.Security.Cryptography.SHA1]::Create()
 
     #######
     # Func
@@ -122,13 +124,13 @@ try
           $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
         }
 
-        Write-Output -InputObject (New-Object PSObject -ArgumentList @{
+        Write-Output -InputObject (New-Object PSObject -Property ([ordered]@{
 
+            FullLength    = $FullLength
             Padding       = $Padding
             LengthBytes   = $LengthBytes
             PayLoadLength = $PayLoadLength
-            FullLength    = $FullLength
-        })
+        }))
     }
 
     # https://social.technet.microsoft.com/Forums/windows/en-US/e86bdf17-8902-4f74-b5d4-7ca60b99e185/ocsp-issues
@@ -173,13 +175,11 @@ try
         }
         else
         {
-            if (($RawData.Count % 2) -eq 0)
+            $LengthBytes = "{0:x2}" -f $RawData.Count
+
+            if (($RawData.Count % 2) -ne 0)
             {
-                $LengthBytes = "{0:x2}" -f $RawData.Count
-            }
-            else
-            {
-                $LengthBytes = "0" + ("{0:x2}" -f $RawData.Count)
+                $LengthBytes = "0$LengthBytes"
             }
 
             [Byte[]]$LengthBytes = $LengthBytes -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }
@@ -189,10 +189,10 @@ try
         }
 
         # Get structure from argumentcompleter scriptblock
-        $StructureHash = Invoke-Command -ScriptBlock $MyInvocation.MyCommand.Parameters.Item("Sequence").Attributes.ScriptBlock `
+        $StructureHash = Invoke-Command -ScriptBlock $MyInvocation.MyCommand.Parameters.Item("Structure").Attributes.ScriptBlock `
                                         -ArgumentList @($null, $null, $null, $null, @{ GetStructure = $True })
         # Return ASN1
-        Write-Output -InputObject ( ,$StructureHash[$Structure] + $ComputedRawData)
+        Write-Output -InputObject (,$StructureHash[$Structure] + $ComputedRawData)
     }
 
     function Write-Log
@@ -252,20 +252,76 @@ try
         # Get CDP URL
         )).Format($false) | Where-Object { $_ -match 'URL=(.*?)(?=$|\s\()' } | ForEach-Object { $Matches[1] }
 
-        if (-not $CdpEntries.Contains("$CdpUrl"))
+        if (-not $CdpHashtable.Contains("$CdpUrl"))
         {
-            # Get issuer CN
-            $Issuer = $Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] }
-
-            $CdpEntries.Add("$CdpUrl", "$Issuer")
+            # Add cdp and issuer CN
+            $CdpHashtable.Add("$CdpUrl", "$($Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] })")
         }
+
+        # Decode AIA extension
+        if ((New-Object System.Security.Cryptography.AsnEncodedData(
+            '1.3.6.1.5.5.7.1.1',
+            $Cert.Extensions['1.3.6.1.5.5.7.1.1'].RawData
+
+        # Get OCSP URL
+        )).Format($false) | Where-Object { $_ -match '\(1.3.6.1.5.5.7.48.1\), Alternative Name=URL=(.*)$' } | ForEach-Object { $Matches[1] })
+        {
+            $X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+
+            # https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.x509certificates.x509revocationmode
+            $X509Chain.ChainPolicy.RevocationMode = "NoCheck"
+            $X509Chain.Build($Cert) > $null
+
+            # Set issuerNameHash
+            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
+            $IssuerNameHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($Cert.IssuerName.RawData)
+
+            # Set issuerKeyHash
+            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
+            $IssuerKeyHash = New-ASN1Structure -Structure 'OctetString' -RawData $SHA1.ComputeHash($X509Chain.ChainElements[1].Certificate.PublicKey.EncodedKeyValue.RawData)
+
+            # Set serialNumber
+            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
+            $SerialNumber = New-ASN1Structure -Structure 'Integer' -RawData ($Cert.SerialNumber -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) })
+
+            # Ocsp request
+            [Byte[]]$OcspRequest = New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                # tbsRequest
+                New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                    # Sequence of requests
+                    New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                        # Request
+                        New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                            # CertID
+                            New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                                $HashAlgorithm + $IssuerNameHash + $IssuerKeyHash + $SerialNumber
+                            )
+                        )
+                    )
+                )
+            )
+
+            $OcspArray += "$OcspRequest"
+        }
+
     }
+
+
+
+
+    return
+
 
     #######
     # Exec
     #######
 
-    foreach($CdpUrl in $CdpEntries.GetEnumerator())
+    foreach($CdpUrl in $CdpHastable.GetEnumerator())
     {
         # Get cdp header
         $Head = Try-WebRequest -Uri "$($CdpUrl.Name)" -Method Head
@@ -361,8 +417,8 @@ catch [Exception]
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUxV2t0IngljblzaI9V2VeL39T
-# EP6gghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUf6IEe78I/J26ArlJ+aZcWyaN
+# x2ygghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -493,34 +549,34 @@ catch [Exception]
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUV2lUzBZy
-# FaH8BVIxrvj44JWOwUUwDQYJKoZIhvcNAQEBBQAEggIAl/X6Ae54XVYWND90FOtF
-# a1sp1yG55NQFw/ZKGOBl4Dkdnc46j+5EWgsoFuWaBn4O42LYPffVIAbFqPmTjYy+
-# IYE2VT80sEfSS23W2ENURN/0gar/OSZyIyqCO8xMpTkMPAh4+f+EuOATDQPSQqHv
-# Y5Be1TyAh1zi5ML3eN4quHhmBLnk2obh9xobGg6tYjKV+LqRcmA/yqVgR74OAS7O
-# pyfnL+Qe1nm/LQPdRdtJVku47hJZrnYmoykGoi5iVZhjOgGDwOZZFeXHuPccGbnl
-# hzpy8k8t8MDF+B8dtWD9w+TyM4IMG0c2OO6i3uZvRoqxsnwnYy/evA4VQLK1xhqv
-# 6qzSVsSdzOMOYMvNJvxdZSNSxpm9khLjjR9Ez+EEN4miKhvv60i/J/Z3f9twGF/j
-# igW1KtfNT4Z2bklqCLupB0oDZYwW4DDdHGaqMmT7l5mTAlCYV+Tzy6IvhbA58mCf
-# FUpLwPry3zbazNIkDaS2ljOUb0iIHczG4Vrn1U2R2Y0t1RMpJVFGng4gOnPlrMWT
-# 2IfSCPhMoQ/hAEmpQBrqXVGeLJeNTBe6L+nIi9hgNphrRe8tIthGUt1ab6+vEnXS
-# O02TfyU7K5R9Ob1uNTOOvwGG/IJXzmILvX3StEvyExE/tbjcACiD+O9uvFCgTUbe
-# YOxzEA9inNZW7/YfNtx8WkGhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUw7Qk789B
+# WXmq1VZGswsCr0j9U+YwDQYJKoZIhvcNAQEBBQAEggIAYZ7x8jXCm3K0lLghAH6u
+# mhYboijNmQ1pUUUonKOKLbXvlxZDCJdCNG78gfr2NTyAI6nugk1KETyimL+CqXcV
+# SJLBr4b6gDuPLGBhVPQJF52XlZS8nEv1FEtz4Q7bU82ohhnq3Jpqou+RM/JyQcnW
+# clGDX9h5X90dEpiwGJTGsG6oVeofdpQF4SwQ9R3Gyzk9J/5RRYo0bJ9r5WbVinzF
+# +bO+wfKzaEN0Bm2KvDJXN2h+ykJS46nElRyMDwcvI2iEBUGlj/IuPboKDE1DLB44
+# zruC6JKKca7TkbMavuccqgIZApNh4CRPiof9vHzxgoVC6goPbbwFGcFmOmuAPAOl
+# LqeKLJwv2XbCTpHtdj49AXtPIBM9n6gZ7Su8lg9Sb+Oyi0pMKTp6TdZUl1F8t4ar
+# vLT8Y+8zFyHncvrBgAiXUQr2andRaaxKwD5xnuBxk+7Lg8/+ML9wr1E8DYWR+5F8
+# cXTnfKPzSsu57dySRaZWNlueZw7OJ7UE3ILCmPOHD460Ag3eMYegabhrEgsitMQt
+# r6I0Bt3ixWM4mQocjp8Eq3YeZePpE8vKjr+6yTP4wXA9QfRy86mCaJ6+RAJlReHh
+# DsEW5HfPT0YYZ8EINdwgOe+MFNIgF94PkXr5YorBHRG6DHg8LJOsY4QUvRLrJdOm
+# pZhMDVPawu17UhUZeaIdziehggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTQwMDA3
-# WjAvBgkqhkiG9w0BCQQxIgQgjSXzmhgcIfkRiA1l+9YLuUbiXWwYvIDsFMptUkN3
-# /ycwDQYJKoZIhvcNAQEBBQAEggIAXVrcz/cV1dak9HlNDs4ycvlynako/1/qZLqY
-# uBSpnprFh2RdqiDhYALFJtNv23hhOkz1egz4A4YfeFXsD28UEMQr1oFhn5e4HegW
-# q3XlqJF3ar5iehECsfyp80q9VHxg28Jz6hePbfNP0EgKTRKWSol2LbS51eWC6nVV
-# pQV6aaXA985SmnBQzC6lwPA+VujgBHTRwwssKeLG88hUxfhkKUDRq+PS0RsreV2J
-# lYxcXWBFnDtYVsjIQC0+SvSPw/R7u9gGjE61Erg270jq8ho0qqz/l/udWBR0hhz2
-# r5rh+detUICSQ58G8ZdeF6QCpM9zOH5XElzbIUad/irlROwT+3MZ5S3voa+cATt4
-# LHa+AWIUR5CJ/xvr52q4zQ8IgkJqQIKkypSvqvehD5qur0pLQG61jfqEd8O8XyPY
-# VBdaXgDnIeSWKW2KXZmxg/tHzRBFGT2URLTDDpaZ1VI333w4SJ65Fc/iVCEeVQGb
-# ACZlz7ZQKoSo3vAQPxtgugHsS73WPQkChCr6FFasYxua+ozy4uqQqLXhH+8XOM7h
-# qQZfRi6s3AETRMWVNRs7PVCFnCMpLxr3wa7qPQNqMgr202MHmNS9YFr37Eay7gBJ
-# u3gw+ZyVhRnaKfYUoipkuCr9IvVUl9GowvKaMf4e60z5Jl9/dfQK5toSghllyx3U
-# WtOy3XU=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTUwMDAz
+# WjAvBgkqhkiG9w0BCQQxIgQgmcBG96remdEB+43gYbtBb3uuOrvBy3hE/d8QgKHG
+# L5MwDQYJKoZIhvcNAQEBBQAEggIAGcQ9TliRc2ooYnHK3/ScaaNqAkVBF/Obbipz
+# TrbHXcma5A4J4uLOHKIMSvnlCI1qnYkdd7P39O4GpgijqFLwd9a/y/r22JpUN1iT
+# 5M0UzpbeeiL5btCGJnXXHwx7UWE60QW06tHt2ffiNn9SXsi9Jkv+8CXLzKRzRmNN
+# F1A6NZlU0e2Hoie4Yl52absxr3lkHd4ri0m7PQ8GQalu6rjYvp9NZ1ylHmOqurs7
+# XGShVm/E1CAt+Ga2GoflIxgOiOrT0mBpK4AM6byctcfDXycxO+SOVHlUSAdL+FWu
+# MBNdWVc/TcTLCh76bnl36GlwQqp7ckaX4DlUvSWTGw5v1KSb33CnYXFnhZG7xJ2F
+# 5DeoSJCWUgPMVo+rNhiy7034sRea0wDwBI9sRmbDPQJB/paEv47OQ18nF741GR27
+# omOlUBtVPDGP1jGRvdtPRumuHRqbxkQ4WjLwJ8ciBnTkjQEBTFTP5DCDuL+CViVF
+# ccLiEXKeFGGvKdUhH0o2QWNBt190Dohl3TkRArICTh14GhKNb7TQ/F5L28qGkGFO
+# 4AJZze6/kHmU2FWA0+VKEoj9LQaUH1qSXAfg+sm033275szaVVH5Eo4j4PAoUkTq
+# iDdVkaZJg+iSwTs5TSvbx0OQYZgmsuK9O9R4Ojfnmm0Us0jvrvRlxh1oWG4aSA4l
+# nmSAI2k=
 # SIG # End signature block
