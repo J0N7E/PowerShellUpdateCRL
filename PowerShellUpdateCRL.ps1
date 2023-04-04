@@ -101,25 +101,34 @@ try
     {
         param
         (
+            [Parameter(Mandatory=$true)]
             [Array]$RawData,
+            [Parameter(Mandatory=$true)]
             [Int]$Offset
         )
 
-        if ($RawData[$offset + 1] -lt 128) {
-          $return.lengthbytes = 1
-          $return.Padding = 0
-          $return.PayLoadLength = $RawData[$offset + 1]
-          $return.FullLength = $return.Padding + $return.lengthbytes + $return.PayLoadLength + 1
-        } else {
-          $return.lengthbytes = $RawData[$offset + 1] - 128
-          $return.Padding = 1
-          $lengthstring = -join ($RawData[($offset + 2)..($offset + 1 + $return.lengthbytes)] | %{"{0:x2}" -f $_})
-          $return.PayLoadLength = Invoke-Expression 0x$($lengthstring)
-          $return.FullLength = $return.Padding + $return.lengthbytes + $return.PayLoadLength + 1
+        if ($RawData[$Offset + 1] -lt 128)
+        {
+          $Padding = 0
+          $LengthBytes = 1
+          $PayLoadLength = $RawData[$Offset + 1]
+          $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
+        }
+        else
+        {
+          $Padding = 1
+          $LengthBytes = $RawData[$Offset + 1] - 128
+          $PayLoadLength = [uint32] "0x$(-join ($RawData[($offset + 2)..($offset + 1 + $LengthBytes)] | ForEach-Object { "{0:x2}" -f $_ }))"
+          $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
         }
 
-        $return = "" | Select FullLength, Padding, LengthBytes, PayLoadLength
-    $return
+        Write-Output -InputObject (New-Object PSObject -ArgumentList @{
+
+            Padding       = $Padding
+            LengthBytes   = $LengthBytes
+            PayLoadLength = $PayLoadLength
+            FullLength    = $FullLength
+        })
     }
 
     function Write-Log
@@ -281,8 +290,8 @@ catch [Exception]
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUyIAd0UfuMmKj79XL8XZA1OlT
-# 4hCgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUHLBbVMIIE+H1cpqt+xyQgsOY
+# +vagghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -413,34 +422,34 @@ catch [Exception]
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUAlecqLHl
-# HViPEnotGFDANMbQwgkwDQYJKoZIhvcNAQEBBQAEggIAY0ecR6IBcyZVHE0VUbxx
-# EpY4xjAR0RXoAlvwOI5k6vAyr4k5L9vbq/rRome+/V/jiDNjWqkl/Vo7OTiKdM/X
-# 6mk6XZReizmX7fdK6zZGR5jLyQsiwvyyATBeBqNLjCJF6lUgnJjVMhXkr7Q7gWLk
-# H+YZaGOVkzCY64XZXEjEySYu0rOHUCKkJgTUnnCxfKU7ECjCsN5uI1HGcQLDMs34
-# o4B5c0mVgxDKT4YMtTSTUYQjPEOTcvfsdu9o0Dcx2epw8ef9i9Cwg8qJFuoa2ahH
-# Ep9SbqgwokpA56nFsycPR1YQC3zUuI5FUEdO+qOvpsNIbtA8S0usypuBRWBbgnhm
-# ui6XbuzAk13q1glatYvslT+Q2Du7ttewhs5OoAqxjuI/LFkdjPI99G0NDq0XP3gx
-# iJzuSoXY+ieD11KeXxcyHir8xlCIYzPnSEvNjlW07/QPNTcqCHu//7edZ8Eb50dr
-# SSsPghcMyDcsZ2ASblhNlphaX7Sq0newoAJtiSkOUUOigJrbQFJz3Le1WXjJO5X7
-# L7mwUFGjprvtA+Zv3JVWI8VjHvGLDsx09kEtKdO93GaoCFONHddl80vQgo6t7j2y
-# KgF1ND90nUtafEPGA9wMAn8OGg2VUBJlGuuBzDbJklqRkDfqAYPufYX6/E9+bme4
-# WUa6wrBXroVeAybNaHz7qyOhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU8wye4Gst
+# OuXCkA2yNdbtGflywq4wDQYJKoZIhvcNAQEBBQAEggIAbA3BjKVn3eZloD1JYI1n
+# 1KByQikdItmTUdg/IyrT7CRGU00STdfErgiRyAO/asxipGgqjXdkjl+1ATq9vsgJ
+# noSu2vEBTVhmxqtsVLPg1sC4JhnhwPVRRUwGZIvDTR8deNXK6s8MFfEmzE23lFFf
+# NrDUj535Mbs6QKaCtGqdJ2cxQl/L/xg4cRzsOkb+ZD//Oh1rhUY9Wy05cpUtG0/6
+# jn232l0as0kz7WWSsWCbZY6pfMEWGVTsu7KpporI4fLjn2HB2W//5QDY+EDu0gWv
+# XKeiXl6Mpep3Ik+lEZMM4kQZBEX3bEh6DDaUXk5dzBkfoG19Yo1kLG05Zohfptcx
+# n/pY5LoJqy36XaxYrxx2TUw2aNBNWmFHvfwQV64AzG6yfZKsI5cMafAPhPyY7N7l
+# F3g4epR+vHrVHeyh71BYGcLj0Z2Y6Pw8/DLTpNSwSM/gKJw10brGxvwOI8WFfjM4
+# nzSKinJdr4D+FaoYDjuEUdUwMUyswq/sRuugZP2zUbbukKgs5zqWVh4ToeyOh8RX
+# bNz3hInb8gSQ6PcAX3DdtD5YB+5JOw97G4sA01m9sS3q1VOkQR3a4pn5jpe3Kzks
+# ErI8y+GUPzw2ybzcjbTEld8zkI86OQpACsQIzrhc1UBDwMtnO/CN7VuyZyVRnceV
+# VHA9lHBZ2t+qSuEy5kV2pRihggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTIwMDA2
-# WjAvBgkqhkiG9w0BCQQxIgQgZsH5Tu6I4AsN7egrQgVCMJvTqmLKF+9NO4E2KA5B
-# 3QkwDQYJKoZIhvcNAQEBBQAEggIAPWmmjHUxQnNICjaFeUeUcbZT8QkYwpa5Isat
-# nUnASST7YVgReL/fzoId6h/02YMWJB4lac7CPLX0mCgwdsYWWX4dxc44YfrJWTXS
-# I/0wsJFi/RKMbuX9HUrtLNx4Uy3HxGTzdtHoMo1dPQQnFWIp5sdT/sF9Uz2Fqe7a
-# 2z9queQRlENvimMI2SMxz5VRPhBJ88HE34D+ALvdoOSjmG137cik1XAbnoJJnxHg
-# 0ATerrpIt1UShpFbw6TFBRGSzjD4qo8IFWXl4tbVXL0Zrhewy2o2TsUsnnSZgy5J
-# QJS4thfNzbioyoTuidSIyWz9ulNAVlbG69YqlGGXwo0cg+wuizntttDXd8kiNMho
-# aWPAKb+w+yux1VUAWx3ERibaxpaYRnJY+XH1BSnKNEZM0RhjbMYhN3GsOYnr3WF4
-# InmqYUEjCsFHgKoTuiLAD7X/mFVs+GG6EJEuruLOg2LBbp+63ThyD26B2JMXMRU7
-# ajNnH9coalPhhNN1ItxkxOLdampjnZJx23eFi7D4JzKZLKMgodJgy02pmSpIJypL
-# j1uTRiqhu0RwPIQ05Q1xdvWZlm3RUklhGCcXPAFF5Px+C48UvGiY4LMUn2lt5Bir
-# +s8cxUi/rBpKfK+TbT3QU/reV8IVvWNLEfHu+xFELwL6TLLFUVMOKImhud6JVC/T
-# lE4MAPI=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTMwMDAy
+# WjAvBgkqhkiG9w0BCQQxIgQgD2ohEhoTlZ0W82t8ZpZmY1Ax4Y1Vu05l6bfmspVI
+# ncAwDQYJKoZIhvcNAQEBBQAEggIATScUvxtPmPFhDZbOlzK3SI4mO/vW3HXaB1ld
+# ZFiBKjqQNOSyRV8/ZRDS4Sjuu8J4WZBQLl+EZtYiFTHskoCPw2wgTJJdU0Wzcj2U
+# Nktn6+5wpKOSdeACE8iGkGnVNpbxG7hIEyc5wwtO//rph3pv3A249PcQxLqQ8AKO
+# a1VZjKa+Yykl9oe19k/fdriSift6OkQ2xmN1oP/pm2THC51vvbfrShA7bnNCThcv
+# sWr2KFFDq9gbxmbTwH1ZXgLfWqSgIT2MZFEU1uicn6xeRZDLlKAkaejLgsGk76TV
+# jhokD9QbZuBxRJvKuCTnmuUfYDy2XZoa+GGuP50YHQRaKnuKxsKKad4v8dnuwaQP
+# JSHNW5SIrDVXzHvlTkCZjfBa7IW61A700fp9R+rUidBsKkCYMvXHkwlODsgoV7jx
+# +DLBD49hd8jo5lnmOGo3S62O8YZJcau1Gin/ZDuHb1tN2Pk8WWL7jyPbun1uOt9g
+# U2S+SLwFMqxW6Uh+NvfqyFlaWYuAvz2uPW8EYFBAWrub4hxHnmcecRLPIjWeq9NX
+# ecznZPaB2Lcukk0LVP0G9EYsF7z5141HpVjghyfTqceB4ArZUO81yKUYmJlSMlV8
+# +K7sFw5EQEqWldxhkk3Lp+wXD45iZ702UUyOqd0FZwyIW7FKt7RQ2E2AuQfjUKua
+# Jr4lYCY=
 # SIG # End signature block
