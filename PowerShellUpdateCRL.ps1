@@ -8,7 +8,7 @@
 
  .NOTES
     AUTHOR Jonas Henriksson
-    CREDIT TO Vadims Podāns for ASN.1 functions
+    CREDIT TO Vadims Podāns for ASN.1 functions and ocsp encoding
 
  .LINK
     https://github.com/J0N7E
@@ -118,7 +118,7 @@ try
         {
           $Padding = 1
           $LengthBytes = $RawData[$Offset + 1] - 128
-          $PayLoadLength = [uint32] "0x$(-join ($RawData[($offset + 2)..($offset + 1 + $LengthBytes)] | ForEach-Object { "{0:x2}" -f $_ }))"
+          $PayLoadLength = [uint32] "0x$(-join ($RawData[($Offset + 2)..($Offset + 1 + $LengthBytes)] | ForEach-Object { "{0:x2}" -f $_ }))"
           $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
         }
 
@@ -129,6 +129,70 @@ try
             PayLoadLength = $PayLoadLength
             FullLength    = $FullLength
         })
+    }
+
+    # https://social.technet.microsoft.com/Forums/windows/en-US/e86bdf17-8902-4f74-b5d4-7ca60b99e185/ocsp-issues
+    function New-ASN1Structure
+    {
+        param
+        (
+            [Parameter(Mandatory=$true)]
+            [Byte[]]$RawData,
+            [ArgumentCompleter({
+
+                $Structure =
+                @{
+                    'Boolean' = 1
+                    'Integer' = 2
+                    'BitString' = 3
+                    'OctetString' = 4
+                    'OID' = 6
+                    'UTF8String' = 12
+                    'IA5String' = 22
+                    'UTCTime' = 23
+                    'GeneralizedTime' = 24
+                    'Sequence' = 48
+                }
+
+                if ($args[4].GetStructure)
+                {
+                    $Structure
+                }
+                else
+                {
+                    $Structure.Keys
+                }
+            })]
+            [string]$Structure = "Sequence"
+        )
+
+        if ($RawData.Count -lt 128)
+        {
+            $LengthBytes = $RawData.Count
+            $ComputedRawData = ,$LengthBytes + $RawData
+        }
+        else
+        {
+            if (($RawData.Count % 2) -eq 0)
+            {
+                $LengthBytes = "{0:x2}" -f $RawData.Count
+            }
+            else
+            {
+                $LengthBytes = "0" + ("{0:x2}" -f $RawData.Count)
+            }
+
+            [Byte[]]$LengthBytes = $LengthBytes -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }
+
+            $PaddingByte = 128 + $LengthBytes.Count
+            $ComputedRawData = ,$PaddingByte + $LengthBytes + $RawData
+        }
+
+        # Get structure from argumentcompleter scriptblock
+        $StructureHash = Invoke-Command -ScriptBlock $MyInvocation.MyCommand.Parameters.Item("Sequence").Attributes.ScriptBlock `
+                                        -ArgumentList @($null, $null, $null, $null, @{ GetStructure = $True })
+        # Return ASN1
+        Write-Output -InputObject ( ,$StructureHash[$Structure] + $ComputedRawData)
     }
 
     function Write-Log
@@ -271,6 +335,12 @@ try
                         # Remove oscp cache
                         #certutil -urlcache "$OcspRequest" delete > $null
 
+
+$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+$store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+$cert = $store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, 'BECEE93763E01A2C2823F0999018BC17225B88B5', $false)[0]
+$store.Close()
+
                         if($ETag)
                         {
                             # Remember etag
@@ -287,11 +357,12 @@ catch [Exception]
     Write-Log -EntryType Error -Message $_
 }
 
+
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUHLBbVMIIE+H1cpqt+xyQgsOY
-# +vagghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUxV2t0IngljblzaI9V2VeL39T
+# EP6gghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -422,34 +493,34 @@ catch [Exception]
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU8wye4Gst
-# OuXCkA2yNdbtGflywq4wDQYJKoZIhvcNAQEBBQAEggIAbA3BjKVn3eZloD1JYI1n
-# 1KByQikdItmTUdg/IyrT7CRGU00STdfErgiRyAO/asxipGgqjXdkjl+1ATq9vsgJ
-# noSu2vEBTVhmxqtsVLPg1sC4JhnhwPVRRUwGZIvDTR8deNXK6s8MFfEmzE23lFFf
-# NrDUj535Mbs6QKaCtGqdJ2cxQl/L/xg4cRzsOkb+ZD//Oh1rhUY9Wy05cpUtG0/6
-# jn232l0as0kz7WWSsWCbZY6pfMEWGVTsu7KpporI4fLjn2HB2W//5QDY+EDu0gWv
-# XKeiXl6Mpep3Ik+lEZMM4kQZBEX3bEh6DDaUXk5dzBkfoG19Yo1kLG05Zohfptcx
-# n/pY5LoJqy36XaxYrxx2TUw2aNBNWmFHvfwQV64AzG6yfZKsI5cMafAPhPyY7N7l
-# F3g4epR+vHrVHeyh71BYGcLj0Z2Y6Pw8/DLTpNSwSM/gKJw10brGxvwOI8WFfjM4
-# nzSKinJdr4D+FaoYDjuEUdUwMUyswq/sRuugZP2zUbbukKgs5zqWVh4ToeyOh8RX
-# bNz3hInb8gSQ6PcAX3DdtD5YB+5JOw97G4sA01m9sS3q1VOkQR3a4pn5jpe3Kzks
-# ErI8y+GUPzw2ybzcjbTEld8zkI86OQpACsQIzrhc1UBDwMtnO/CN7VuyZyVRnceV
-# VHA9lHBZ2t+qSuEy5kV2pRihggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUV2lUzBZy
+# FaH8BVIxrvj44JWOwUUwDQYJKoZIhvcNAQEBBQAEggIAl/X6Ae54XVYWND90FOtF
+# a1sp1yG55NQFw/ZKGOBl4Dkdnc46j+5EWgsoFuWaBn4O42LYPffVIAbFqPmTjYy+
+# IYE2VT80sEfSS23W2ENURN/0gar/OSZyIyqCO8xMpTkMPAh4+f+EuOATDQPSQqHv
+# Y5Be1TyAh1zi5ML3eN4quHhmBLnk2obh9xobGg6tYjKV+LqRcmA/yqVgR74OAS7O
+# pyfnL+Qe1nm/LQPdRdtJVku47hJZrnYmoykGoi5iVZhjOgGDwOZZFeXHuPccGbnl
+# hzpy8k8t8MDF+B8dtWD9w+TyM4IMG0c2OO6i3uZvRoqxsnwnYy/evA4VQLK1xhqv
+# 6qzSVsSdzOMOYMvNJvxdZSNSxpm9khLjjR9Ez+EEN4miKhvv60i/J/Z3f9twGF/j
+# igW1KtfNT4Z2bklqCLupB0oDZYwW4DDdHGaqMmT7l5mTAlCYV+Tzy6IvhbA58mCf
+# FUpLwPry3zbazNIkDaS2ljOUb0iIHczG4Vrn1U2R2Y0t1RMpJVFGng4gOnPlrMWT
+# 2IfSCPhMoQ/hAEmpQBrqXVGeLJeNTBe6L+nIi9hgNphrRe8tIthGUt1ab6+vEnXS
+# O02TfyU7K5R9Ob1uNTOOvwGG/IJXzmILvX3StEvyExE/tbjcACiD+O9uvFCgTUbe
+# YOxzEA9inNZW7/YfNtx8WkGhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTMwMDAy
-# WjAvBgkqhkiG9w0BCQQxIgQgD2ohEhoTlZ0W82t8ZpZmY1Ax4Y1Vu05l6bfmspVI
-# ncAwDQYJKoZIhvcNAQEBBQAEggIATScUvxtPmPFhDZbOlzK3SI4mO/vW3HXaB1ld
-# ZFiBKjqQNOSyRV8/ZRDS4Sjuu8J4WZBQLl+EZtYiFTHskoCPw2wgTJJdU0Wzcj2U
-# Nktn6+5wpKOSdeACE8iGkGnVNpbxG7hIEyc5wwtO//rph3pv3A249PcQxLqQ8AKO
-# a1VZjKa+Yykl9oe19k/fdriSift6OkQ2xmN1oP/pm2THC51vvbfrShA7bnNCThcv
-# sWr2KFFDq9gbxmbTwH1ZXgLfWqSgIT2MZFEU1uicn6xeRZDLlKAkaejLgsGk76TV
-# jhokD9QbZuBxRJvKuCTnmuUfYDy2XZoa+GGuP50YHQRaKnuKxsKKad4v8dnuwaQP
-# JSHNW5SIrDVXzHvlTkCZjfBa7IW61A700fp9R+rUidBsKkCYMvXHkwlODsgoV7jx
-# +DLBD49hd8jo5lnmOGo3S62O8YZJcau1Gin/ZDuHb1tN2Pk8WWL7jyPbun1uOt9g
-# U2S+SLwFMqxW6Uh+NvfqyFlaWYuAvz2uPW8EYFBAWrub4hxHnmcecRLPIjWeq9NX
-# ecznZPaB2Lcukk0LVP0G9EYsF7z5141HpVjghyfTqceB4ArZUO81yKUYmJlSMlV8
-# +K7sFw5EQEqWldxhkk3Lp+wXD45iZ702UUyOqd0FZwyIW7FKt7RQ2E2AuQfjUKua
-# Jr4lYCY=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA0MTQwMDA3
+# WjAvBgkqhkiG9w0BCQQxIgQgjSXzmhgcIfkRiA1l+9YLuUbiXWwYvIDsFMptUkN3
+# /ycwDQYJKoZIhvcNAQEBBQAEggIAXVrcz/cV1dak9HlNDs4ycvlynako/1/qZLqY
+# uBSpnprFh2RdqiDhYALFJtNv23hhOkz1egz4A4YfeFXsD28UEMQr1oFhn5e4HegW
+# q3XlqJF3ar5iehECsfyp80q9VHxg28Jz6hePbfNP0EgKTRKWSol2LbS51eWC6nVV
+# pQV6aaXA985SmnBQzC6lwPA+VujgBHTRwwssKeLG88hUxfhkKUDRq+PS0RsreV2J
+# lYxcXWBFnDtYVsjIQC0+SvSPw/R7u9gGjE61Erg270jq8ho0qqz/l/udWBR0hhz2
+# r5rh+detUICSQ58G8ZdeF6QCpM9zOH5XElzbIUad/irlROwT+3MZ5S3voa+cATt4
+# LHa+AWIUR5CJ/xvr52q4zQ8IgkJqQIKkypSvqvehD5qur0pLQG61jfqEd8O8XyPY
+# VBdaXgDnIeSWKW2KXZmxg/tHzRBFGT2URLTDDpaZ1VI333w4SJ65Fc/iVCEeVQGb
+# ACZlz7ZQKoSo3vAQPxtgugHsS73WPQkChCr6FFasYxua+ozy4uqQqLXhH+8XOM7h
+# qQZfRi6s3AETRMWVNRs7PVCFnCMpLxr3wa7qPQNqMgr202MHmNS9YFr37Eay7gBJ
+# u3gw+ZyVhRnaKfYUoipkuCr9IvVUl9GowvKaMf4e60z5Jl9/dfQK5toSghllyx3U
+# WtOy3XU=
 # SIG # End signature block
