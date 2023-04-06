@@ -68,11 +68,44 @@ try
     $CdpHashtable = @{}
     $OcspHashtable = @{}
     $NonInteractive = [Environment]::GetCommandLineArgs() | Where-Object { $_ -eq '-NonInteractive' }
-    $Sha1 = [System.Security.Cryptography.SHA1]::Create()
 
     #######
     # Func
     #######
+
+    function Get-ASN1Length
+    {
+        param
+        (
+            [Parameter(Mandatory=$true)]
+            [Array]$RawData,
+            [Parameter(Mandatory=$true)]
+            [Int]$Offset
+        )
+
+        if ($RawData[$Offset + 1] -lt 128)
+        {
+          $Padding = 0
+          $LengthBytes = 1
+          $PayLoadLength = $RawData[$Offset + 1]
+          $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
+        }
+        else
+        {
+          $Padding = 1
+          $LengthBytes = $RawData[$Offset + 1] - 128
+          $PayLoadLength = [uint32] "0x$(-join ($RawData[($Offset + 2)..($Offset + 1 + $LengthBytes)] | ForEach-Object { "{0:x2}" -f $_ }))"
+          $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
+        }
+
+        Write-Output -InputObject (New-Object PSObject -Property ([ordered]@{
+
+            FullLength    = $FullLength
+            Padding       = $Padding
+            LengthBytes   = $LengthBytes
+            PayLoadLength = $PayLoadLength
+        }))
+    }
 
     function New-ASN1Structure
     {
@@ -136,38 +169,108 @@ try
         Write-Output -InputObject (,$StructureHash[$Structure] + $ComputedRawData)
     }
 
-    function Get-ASN1Length
+    function New-OcspRequest
+    {
+        param
+        (
+            [ValidateSet('MD5', 'SHA1', 'SHA256')]
+            [String]$HashAlgorithm = 'SHA1',
+            [Parameter(Mandatory=$true)]
+            [Byte[]]$IssuerName,
+            [Parameter(Mandatory=$true)]
+            [Byte[]]$IssuerKey,
+            [Parameter(Mandatory=$true)]
+            [Byte[]]$SerialNumber
+        )
+
+        # Get hash oid
+        $HashOidCollection = New-Object Security.Cryptography.OidCollection
+        $HashOidCollection.Add((New-Object System.Security.Cryptography.Oid("1.3.14.3.2.26", $HashAlgorithm))) > $null
+        $HashRawData = (New-Object Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension $HashOidCollection, $false).RawData
+
+        switch($HashAlgorithm)
+        {
+            'MD5'
+            {
+                $HashObject = [System.Security.Cryptography.MD5]::Create()
+            }
+
+            'SHA256'
+            {
+                $HashObject = [System.Security.Cryptography.SHA256]::Create()
+            }
+
+            default
+            {
+                $HashObject = [System.Security.Cryptography.SHA1]::Create()
+            }
+        }
+
+        # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
+        Write-Output -InputObject (
+
+            [System.Uri]::EscapeDataString(
+
+                [System.Convert]::ToBase64String((
+
+                    # OcspRequest
+                    New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                        # TbsRequest
+                        New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                            # Sequence of requests
+                            New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                                # Request
+                                New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                                    # CertID
+                                    New-ASN1Structure -Structure 'Sequence' -RawData (
+
+                                        # HashAlgorithm
+                                        (New-ASN1Structure -Structure 'Sequence' -RawData ($HashRawData[2..($HashRawData.Count - 1)] + 5,0)) +
+
+                                        # IssuerNameHash
+                                        (New-ASN1Structure -Structure 'OctetString' -RawData $HashObject.ComputeHash($IssuerName)) +
+
+                                        # IssuerKeyHash
+                                        (New-ASN1Structure -Structure 'OctetString' -RawData $HashObject.ComputeHash($IssuerKey)) +
+
+                                        # SerialNumber
+                                        (New-ASN1Structure -Structure 'Integer' -RawData ($SerialNumber))
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            )
+        ))
+    }
+
+    function New-Sha256Hash
     {
         param
         (
             [Parameter(Mandatory=$true)]
-            [Array]$RawData,
-            [Parameter(Mandatory=$true)]
-            [Int]$Offset
+            [String]$String
         )
 
-        if ($RawData[$Offset + 1] -lt 128)
+        begin
         {
-          $Padding = 0
-          $LengthBytes = 1
-          $PayLoadLength = $RawData[$Offset + 1]
-          $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
-        }
-        else
-        {
-          $Padding = 1
-          $LengthBytes = $RawData[$Offset + 1] - 128
-          $PayLoadLength = [uint32] "0x$(-join ($RawData[($Offset + 2)..($Offset + 1 + $LengthBytes)] | ForEach-Object { "{0:x2}" -f $_ }))"
-          $FullLength = $Padding + $LengthBytes + $PayLoadLength + 1
+            $Sha256 = [System.Security.Cryptography.SHA256]::Create()
         }
 
-        Write-Output -InputObject (New-Object PSObject -Property ([ordered]@{
+        process
+        {
+            Write-Output -InputObject ([System.Uri]::EscapeDataString([System.Convert]::ToBase64String($Sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($String)))))
+        }
 
-            FullLength    = $FullLength
-            Padding       = $Padding
-            LengthBytes   = $LengthBytes
-            PayLoadLength = $PayLoadLength
-        }))
+        end
+        {
+            $Sha256.Dispose()
+        }
     }
 
     function Try-WebRequest
@@ -257,8 +360,11 @@ try
 
             if (-not $CdpHashtable.Contains("$CdpUrl"))
             {
-                # Add cdp and issuer cn
-                $CdpHashtable.Add("$CdpUrl", "$($Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] })")
+                $CdpHashtable.Add("$CdpUrl", @{
+
+                    Url = $CdpUrl
+                    Issuer = $Cert.Issuer
+                })
             }
         }
 
@@ -266,33 +372,31 @@ try
         if  ($Cert.Extensions['1.3.6.1.5.5.7.1.1'])
         {
             # Decode aia extension
-            if ((New-Object System.Security.Cryptography.AsnEncodedData(
+            $OcspUrl = (New-Object System.Security.Cryptography.AsnEncodedData(
                 '1.3.6.1.5.5.7.1.1',
                 $Cert.Extensions['1.3.6.1.5.5.7.1.1'].RawData
 
             # Get ocsp url
-            )).Format($false) | Where-Object { $_ -match '\(1.3.6.1.5.5.7.48.1\), Alternative Name=URL=(.*)$' } | ForEach-Object { $Matches[1] })
+            )).Format($false) | Where-Object { $_ -match '\(1.3.6.1.5.5.7.48.1\), Alternative Name=URL=(.*)$' } | ForEach-Object { $Matches[1] }
+
+            if ($OcspUrl)
             {
                 # Create x509Chain
-                $X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
-                $X509Chain.ChainPolicy.RevocationMode = "NoCheck"
-                $X509Chain.Build($Cert) > $null
+                #$X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+                #$X509Chain.ChainPolicy.RevocationMode = "NoCheck"
+                #$X509Chain.Build($Cert) > $null
 
-                # Get issuer, public key and serialnumber for ocsp
                 $OcspInfo =
                 @{
-                    IssuerName = $Cert.IssuerName.RawData
-                    EncodedKeyValue = $X509Chain.ChainElements[1].Certificate.PublicKey.EncodedKeyValue.RawData
-                    SerialNumber = $Cert.SerialNumber -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }
+                    Url = $OcspUrl
+                    #IssuerName = $Cert.IssuerName.RawData
+                    #IssuerKey = $X509Chain.ChainElements[1].Certificate.PublicKey.EncodedKeyValue.RawData
+                    #SerialNumber = $Cert.SerialNumber -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }
                 }
 
-                if ($OcspHashtable.Contains("$CdpUrl"))
+                if (-not $OcspHashtable.Contains("$CdpUrl"))
                 {
-                    $OcspHashtable.Item("$CdpUrl") += $OcspInfo
-                }
-                else
-                {
-                    $OcspHashtable.Add("$CdpUrl", @($OcspInfo))
+                    $OcspHashtable.Add("$CdpUrl", $OcspInfo)
                 }
             }
         }
@@ -305,7 +409,7 @@ try
     foreach($Cdp in $CdpHashtable.GetEnumerator())
     {
         # Get cdp header
-        $Head = Try-WebRequest -Uri "$($Cdp.Name)" -Method Head
+        $Head = Try-WebRequest -Uri "$($Cdp.Value.Url)" -Method Head
 
         # Header request successfull
         if ($Head -and $Head.StatusCode -eq '200')
@@ -314,19 +418,21 @@ try
             $ETag = $Head.Headers["ETag"] | Where-Object { $_ -match '"(.*):0"' } | ForEach-Object { $Matches[1] }
 
             # Get old etag
-            $OldETag = [System.Environment]::GetEnvironmentVariable("$($Cdp.Value)_ETag", 'User')
+            $OldETag = [System.Environment]::GetEnvironmentVariable("Crl_$(New-Sha256Hash -String $Cdp.Value.Url)_ETag", 'User')
 
             # Check if to download crl
             if(-not $ETag -or $ETag -ne $OldETag)
             {
                 # Request crl
-                $Request = Try-WebRequest -Uri "$($Cdp.Name)"
+                $Request = Try-WebRequest -Uri "$($Cdp.Value.Url)"
 
                 # Request successfull
                 if($Request -and $Request.StatusCode -eq '200')
                 {
                     # Get filename
-                    $CdpFile = $Cdp.Name.Substring($Cdp.Name.LastIndexOf('/') + 1)
+                    $CdpFile = $Cdp.Value.Url.Substring($Cdp.Value.Url.LastIndexOf('/') + 1)
+                    $CdpIssuerCn = $Cdp.Value.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] }
+
 
                     # Save crl to temp
                     Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
@@ -337,7 +443,7 @@ try
                         $OldCrlNumber = $null
 
                         # Check old and new crl
-                        foreach ($Arg in "-store ca `"$($Cdp.Value)`"", "`"$env:TEMP\$CdpFile`"")
+                        foreach ($Arg in "-store ca `"$CdpIssuerCn`"", "`"$env:TEMP\$CdpFile`"")
                         {
                             # Get crl number
                             $CrlNumber = Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] }
@@ -361,68 +467,24 @@ try
                     if($ETag -or $CrlNumber -gt $OldCrlNumber)
                     {
                         # Remove old crl
-                        certutil -delstore ca "$($Cdp.Value)" > $null
+                        certutil -delstore ca "$CdpIssuerCn" > $null
 
                         Write-Log -EntryType Information -Message "Updating CRL `"$CdpFile`" for $(whoami)"
                         certutil -addstore ca "$env:TEMP\$CdpFile" > $null
 
                         # Remove crl cache
-                        certutil -urlcache "$([Uri]::EscapeUriString($Cdp.Name))" delete > $null
+                        certutil -urlcache "$([Uri]::EscapeUriString($Cdp.Value.Url))" delete
 
-                        # Itterate ocsp info
-                        foreach($Cert in $OcspHashtable.Item($Cdp.Name))
+                        # Check ocsp
+                        if ($OcspHashtable.Contains($Cdp.Name))
                         {
-                            # Get sha1 oid
-                            $OidCollection = New-Object Security.Cryptography.OidCollection
-                            $OidCollection.Add((New-Object System.Security.Cryptography.Oid("1.3.14.3.2.26", "SHA1"))) > $null
-                            $OidRawData = (New-Object Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension $OidCollection, $false).RawData
-
-                            # Ocsp request
-                            # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
-                            $OcspRequest = New-ASN1Structure -Structure 'Sequence' -RawData (
-
-                                # tbsRequest
-                                New-ASN1Structure -Structure 'Sequence' -RawData (
-
-                                    # Sequence of requests
-                                    New-ASN1Structure -Structure 'Sequence' -RawData (
-
-                                        # Request
-                                        New-ASN1Structure -Structure 'Sequence' -RawData (
-
-                                            # CertID
-                                            New-ASN1Structure -Structure 'Sequence' -RawData (
-
-                                                # HashAlgorithm
-                                                (New-ASN1Structure -Structure 'Sequence' -RawData ($OIDRawData[2..($OIDRawData.Count - 1)] + 5,0)) +
-
-                                                # IssuerNameHash
-                                                (New-ASN1Structure -Structure 'OctetString' -RawData $Sha1.ComputeHash($Cert.IssuerName)) +
-
-                                                # IssuerKeyHash
-                                                (New-ASN1Structure -Structure 'OctetString' -RawData $Sha1.ComputeHash($Cert.EncodedKeyValue)) +
-
-                                                # SerialNumber
-                                                (New-ASN1Structure -Structure 'Integer' -RawData ($Cert.SerialNumber))
-                                            )
-                                        )
-                                    )
-                                )
-                            )
-
-                            $EncodedOcspRequest = [System.Uri]::EscapeDataString([System.Convert]::ToBase64String($OcspRequest))
-
-                            if (certutil -urlcache "$EncodedOcspRequest" | Where-Object { $_ -match 'WinHttp Cache entries: 1' })
-                            {
-                                Write-Log -EntryType Information -Message "Remove OCSP cache `"$EncodedOcspRequest`" for $(whoami)"
-                                certutil -urlcache "$EncodedOcspRequest" delete > $null
-                            }
+                            certutil -urlcache $OcspHashtable.Item($Cdp.Name).Url delete
                         }
 
                         if($ETag)
                         {
                             # Remember etag
-                            [System.Environment]::SetEnvironmentVariable("$($Cdp.Value)_ETag", $ETag, 'User')
+                            [System.Environment]::SetEnvironmentVariable("Crl_$(New-Sha256Hash -String $Cdp.Value.Url)_ETag", $ETag, 'User')
                         }
                     }
 
@@ -441,8 +503,8 @@ catch
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUAyRoZME6BnNp9kH6ljvlfsaj
-# fJGgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUkYhGbfL2t38ftyAhG4rrAqrs
+# O+2gghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -573,34 +635,34 @@ catch
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUY1rBS4M5
-# TcR4VJIck2hxOHAgUrAwDQYJKoZIhvcNAQEBBQAEggIAVOvnd9xUT9fXXWDeuUOd
-# P3tIqzOb+exiSkDowtEoVfFRawPU1RHQLvatSZciLRRUIXebLlFLLJgr57/HzijA
-# 9aqVAEXh9y/vGQg54pFFK/EabvpcKTKvzqwfXFKRIWy90C4v4w6EMwQtcsik65QP
-# vw4o+3DWgC3OHQPAr3qi2ox4Fs630LLI9Nm1O2/tAVi4pZFwU1N52Si3RVl9Xnjy
-# Le5ox6osaie1kZWxvXpNAiyc25ASV4E6vox2Q+/OpXOqRbjtoMVxAYxHxXO5fc8d
-# rLRy0BQPCfjdTJLqR5h4Ph3sytRB1XxEUiSwsVTuMjrrhgb2BaQXHUrjnqyrOXHD
-# RSIGRCV40nSU5XxNNwvMKG9YAzaZNtDQDKTTvU9em3Zyxg2mzLKlF/2WJlTJkUlP
-# w6XfJZegGbnVUtT8CxDyo7Ix/tCx9wnFteUaJy+slDsFirT0eSHn7+5EnUvykQG7
-# XhLSQrGO21nFoo0ZY3cfVbTVDCTBnvTiZUGMMHBltT8qFvQiFTMY2JDp+uP8dgv1
-# t/9DlKmnrscMqYeE53JrFzesRHiKlZz0GawYhxxWPU7YgFjEP1UptDkYOfocifzj
-# 8EOEJBGt4otISFNV5a4JvcxdTR+1XW1Y9BjB4SEDFZU/jrrcC08L54m7MryaHdNe
-# ShELJwA1WV+ILSJo5xRMMLqhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU4NWcoIRF
+# omQPgpxFQ1L8j7VkrmowDQYJKoZIhvcNAQEBBQAEggIAJgWjbV+L0R17Gaf1xv3I
+# QYw1Cz6Fvjr0oRRAJivzggAWZ+EmFlG0MMPMm/a0qXG1Izmi/1AJOebKneuqJqYu
+# ZMne+Kywlhwl/qt8z1CQHOEFb8OeRe3zEryTGGdpM3oUNvUeFvkJzy3uThcUh/y3
+# x8RqOE0h6keuy2BGtgivIHxOVf4iNQJaD1y6VB6+kLqd8XYNdRyTEimBVZSbh6RX
+# 0gzYs7O5j6AY6wkWQVnMPXQ2JI49Ces4XGgDLBxCwoubRvdB1YRfFxAq/sDzNcW6
+# nT+8wDzyJzI985aFoCO4xQ131F+5iQyjs8T0YiUJT21v/1je1de8ybTDuRjsA7gL
+# +RaM8dHmDLHDHoFt9uo1OL8O5pGmosJtz9fM1Xg1z0d3mSbuaMsc3UILKaL4E2FK
+# 1aG/THeGdfF1XU8AvLG1EzwiKddlAX2zntrWN8LAzINOKz+vw7wC5a5sLHf3+vpz
+# 4dbJ0Lq301g8zmt86AZ/2di9T78TIwomGJVb6T1OzJVrqIHHdwhAnXRgtQlN75tZ
+# VaW6EvkdzqIBC4SqilH+xY9Pq9TYinX5Sq+VqHYRIpBWaRldDX7IodBTbCrm8+/k
+# mn9+QMijhjdc9xsaM6VuHWQe/A1BKn/SX30RB9J8IvqieKq6p80cD/V4/c69+0Ru
+# C1W9n/DFZ2T9YdDwYFy8koGhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA1MDAwMDAz
-# WjAvBgkqhkiG9w0BCQQxIgQgbuDVZqAaNDbAMjyN3Q2+z1mhy1YTKzXnwVOme81O
-# YCEwDQYJKoZIhvcNAQEBBQAEggIAk6mDIYXqlUdmxcKi4OPuwDzkAdMqi3aGYvqZ
-# BkxsZM4ll9nInppSzfYij9DaPruWHPLwYrLZBHiv0PeFZrw52KDJQCknhzzS0A6+
-# l+6GPh5ki05Hc+8DhU2jgKmxWCz39RHssdHAW6F+mduO4ovRsM+spWsKJXsJnU2w
-# 2lxv8I1DdmzcOwIc1dKa2E7ZgtaP4gKFrEPvkXCTGIQ6cqMpl2GtMwb6bHqQsfeh
-# fMsyfNqZT8UHUvE9Ge0anY6qFaKqkphrlzgHuMB807HfSEKg0Gs/3UFuNux+nqr9
-# lYzA2G4ZoasO+vZth/OEct9TCydhMWmbYx9UV17K/aGEgvFnSaqz7RiLyuxZL5AH
-# 7FU14EqlQ2mxlLE+yY0Mxi7cC8gyX88xQa1Ooanwgh+//OKqtiXmVHHaZKcL6RTn
-# Qe+dGC/1WtY0BsTdvYew47c1asTjM0VQqICN9/hIDfZkXvCBUuBpqshRgvU17bfQ
-# rpdSWiDAkb5/AFmXMMs9WS1Cy+dLCoXYcQJ8LJb46UbFlNGr8OpjBkecjwnvcmFE
-# m1aX5O6SgK8a3jQlX7/8odAzIH/W+3RmegV2+PVkQ97aKXFe1NQoODC5oN0uXxEO
-# xGfFvoLeMmAAWvAJVORQJ3O4TOS7sTkeq6uMRiM+VZXKEoviHo1ZpxVqnd1ajYRG
-# UvpT0b0=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA2MTEwMDAz
+# WjAvBgkqhkiG9w0BCQQxIgQg9qrTp6ANyCPUNQgLXBuIu2Qrr4mNzq0prFxBX9dE
+# HsEwDQYJKoZIhvcNAQEBBQAEggIANzQrU8JTphKFexnkmeezz7ObikxeGUzG4RTO
+# R5seeQ9xi/DBIGLrONBtLfzFKXxXa2wY39Z5XaPo3SZvg3iI2FHknitsACW0epcR
+# UH4F+jCd1taABARRvG0xSCnuCgVP+Sw2VpTG4pcyaq/zAv8z94GabsPn+HRM0RuJ
+# lkgQP51t67Pw1q9Xg5a7U/mDF51IisZHiAvMi4Enx5IIaRc1lw07il46JxfV8im4
+# 0CDstEF+DCMiS3s6XwWcg8Z/ctkmiF0RL0HHj+Nk8/1DhkypUv/QsjkMNcheHIGk
+# iRmQ8ULe+qoMSpg4hnMLPDedypxQPPLooRzYtn95jTEqxlRCyCwftSgK9CrxabLM
+# ZocSz4KwlDrJ7J1OwOiGW6H0BG1XDYsSzYZhU6ARkYUrFUxCcfmSYinSZOjkOchs
+# YdFyb6kW6CTtP3Q90Ynmfi76rrH48YyXuvOFbb5Tqmibl9tKMEu+yGzgApXshhRt
+# Eqwuoml94vsTHouMKsR2s7KloXjzl2o75wwGyXp6zYG6goXrjqGcweum/k9kEB6y
+# ZqOrL/tkU1uvrENXO6BGX9rGUu/RyHz3ploItEiabW2ek0mzqtpSqIhOLdQJctV1
+# /C/MQ+CChf1mPJVevKa5xkkNuF6CeVonNEXCbAWmaqzW0qOqNH4PMYqOGhInuAK7
+# 05eCkyk=
 # SIG # End signature block
