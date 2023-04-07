@@ -8,7 +8,7 @@
 
  .NOTES
     AUTHOR Jonas Henriksson
-    CREDIT TO Vadims Podāns for ASN.1 and ocsp encoding
+    CREDIT TO Vadims Podāns for ASN.1 and OCSP encoding
     https://social.technet.microsoft.com/Forums/windows/en-US/e86bdf17-8902-4f74-b5d4-7ca60b99e185/ocsp-issues
 
  .LINK
@@ -270,7 +270,7 @@ try
         }
     }
 
-    function Convert-ToMD5Base64Url
+    function Convert-ToSha2Base64Url
     {
         param
         (
@@ -280,17 +280,17 @@ try
 
         begin
         {
-            $MD5 = [Security.Cryptography.MD5]::Create()
+            $Sha2 = [Security.Cryptography.Sha256]::Create()
         }
 
         process
         {
-            Write-Output -InputObject ([Uri]::EscapeDataString([Convert]::ToBase64String($MD5.ComputeHash([Text.Encoding]::UTF8.GetBytes($String)))))
+            Write-Output -InputObject ([Uri]::EscapeDataString([Convert]::ToBase64String($Sha2.ComputeHash([Text.Encoding]::UTF8.GetBytes($String)))))
         }
 
         end
         {
-            $MD5.Dispose()
+            $Sha2.Dispose()
         }
     }
 
@@ -426,7 +426,7 @@ try
             $ETag = $Head.Headers["ETag"] | Where-Object { $_ -match '"(.*):0"' } | ForEach-Object { $Matches[1] }
 
             # Get old etag
-            $OldETag = [Environment]::GetEnvironmentVariable("Crl_$(Convert-ToMD5Base64Url -String $Cdp.Value.Url)_ETag", 'User')
+            $OldETag = [Environment]::GetEnvironmentVariable("Crl_$(Convert-ToSha2Base64Url -String $Cdp.Value.Url)_ETag", 'User')
 
             # Check if to download crl
             if(-not $ETag -or $ETag -ne $OldETag)
@@ -491,7 +491,7 @@ try
                         if($ETag)
                         {
                             # Remember etag
-                            [Environment]::SetEnvironmentVariable("Crl_$(Convert-ToMD5Base64Url -String $Cdp.Value.Url)_ETag", $ETag, 'User')
+                            [Environment]::SetEnvironmentVariable("Crl_$(Convert-ToSha2Base64Url -String $Cdp.Value.Url)_ETag", $ETag, 'User')
                         }
                     }
 
@@ -510,8 +510,8 @@ catch
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUbyi1oGYDpTvjOV2kNdXb/iwY
-# LbigghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUXC6ZUnbXXjOTSJhi9SLcmYW3
+# JsegghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -642,34 +642,34 @@ catch
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUXdh9u1yb
-# MLdSc8JCdiiK56lscnMwDQYJKoZIhvcNAQEBBQAEggIADl0G/rvd6SQRX4UPT3fq
-# mUHKoUTP9cYj9Ezx71fOyPTYYsKcdJdEhhqysw+ITFHw/innSGIgXH3bV4ZQca/m
-# 1vJHKHy0MkMiuebYHS3sCDCobuVNGBhbyhfZMYso+430bmEa4IvlZvOCfy3KUDfv
-# blOGD+BdWNpdCRvk6mwyUUGYU1yves0XAkLN81MZsQBWm0CfY8A8UUwlUExkoBxe
-# H0XW5YzIS8/k+D8KfY7aWy74iLtLJhpqTbmfSnALKcRl1o26HLocXAnueR6OEEDY
-# x0j3SFiyDhBiggqbHMzQrCKHxRhjiX3HIVILoEdQ14qWQQpW7QIOijpuKDPKp75b
-# mZpnanvmzq30K/FSCeI8gH/WXc/0796uNaUgLtldrGy7OcnRyxcMRa1RK44Nn89B
-# 6lH5Yzub1UrzEo6Lf911nB72XaBW57ADv3TFQtOClblrZHCmIbYF1QWe66QxAOrm
-# ElxMHeGehf/LKNY/7Cls4uMcIbLBEkuaw+jaT4Oi9vAFfv4r3MbWVwUeArIMRt8R
-# BsXssIZ1yFGEiKK8xJpX7NSyuy7Hu2YjF3LwI3x5KimlShGSK52XWRcUclFoxuEi
-# hdKIzAE+xB8Xx512Aa8O9VVCb7zcoCsj3Qcp0rGb64uNooRUc1IQdYPD3DNL7nBh
-# FVLSHxplmQYaQuIasNSx5tGhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUooPsjxpI
+# 0zoeiNpSP+MZuWwE3PcwDQYJKoZIhvcNAQEBBQAEggIAkpySSFo+iZ2p17rocblF
+# zTxcBtbCGqnvgvOCtkI6jFnI/3Il6zUnGcTeOewcqH9H17Mo2iUo1wjP62J7/1Ty
+# kUTfPXnHsPERijP6caJbwKNlBZvBRSn7N170g/ulYWZ9RR/kkk6WBYxvtZv2tHle
+# szVWsoayKmaX47tBMoSzasgkrJIQd3YnvpORFEY/O9fUKTmNKVgn75nNV3AmBJnB
+# TdAd2mcoZM/ANG+PTEPDi5dKnCHX41lpHbaxODKotCfl1uUKKSkDOSGrzkMYbmro
+# RnAl2VuhzhcsGqVDZH+wd9M0LCgQxq5uh3HEc7M2vBHZK8KkFuX+j9DSsWDDv/DS
+# 927kcvrGzNUahhv3Vt3M9NPhpaB8RMtclRXfWySVr5z/TQWshDKSaryOCmcgIZ+D
+# BQ30gT8u4lI4Tnc3/4eb26CZXc9pRZdSZRUCSzsy0HbyltpDD9L3+jk95gfzbg3o
+# frflbXlrZkrDllfsMOkeFisSeXmgFMksSEZ73XqoAZk888eOgC0IbvjAswLqVQMT
+# 0LqyOi/I//9N+73WtnYXp+/dQTpc9gOo0M4INbSgFL2WzbSojN+FEsN/z88hdmLB
+# I18LF0k6gFwevo1zecTWjP3/jOYNd76cgIgHwSBVOSOq4K6Yr9E3Q6G3g+y77OzM
+# 0+IswRILptjw5FHePARKQM+hggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA3MDAwMTA5
-# WjAvBgkqhkiG9w0BCQQxIgQg3SuIoGK4PMfNOxFA8my1PlX+Od1YIxFplNxUBTfW
-# 0C8wDQYJKoZIhvcNAQEBBQAEggIARgkPLLkZYUIn6TeKg6u6FbGy5WyiiiKgN6wB
-# djg/baKYDVf6EFb0zgbfJr0TfSPw80etcyrnFSM06Tzjs93onr1DIDOMZV/ezFAa
-# DBxeymIi75ikuGNXMO+AS13J7xmPET9vE3AteF9Oi+tItMJEjy7QcfjagdMpQ/mG
-# hkr2mdCs6sW9Ke0NsJqGHCvh5AOz+od9smCDM+KmvuEQ4mLRt4GUzErkJh/OXExb
-# kGoQ1Yy6dDuHbuxLPgcqY79dwiY0+RVBRoT+IQaXsmWn82wJgZFX1XqtfsoZzTS2
-# Zspb/cj6qBO1G8naRR5RG5HEQIn6Z2PpbNahPZ7of3VMKDoeZwnI9s0BL9F9iaK8
-# aTQfpKK3zby4H/3520zyR5cCA+zcLMcjbQj/hCcltKqpOkla1oOZJK4HZtxPrC9k
-# 2CqrOyt0I5hYQVDTBJne7ymZaSGErlYntc0EvltsLdC6U5JpRO1aCucwCmHFQTcJ
-# Wmv/lbQQj4Xyd+OPvUfBJq5gKiUZpwelLWSnN5M0FMG0YmGTLTzbgojeGh4vJtap
-# nEdoCdan7rG7jDbJIoWlE5lyyqKGtt9HWkXHZuvA2tEcNOEJ3g8Re6sdlpdboQDt
-# s8D86b5l5u5CdmrwBDkY6u0n5PVsHNceRT/tHzfY8xQNZJaC3oikOx91VrCQnCrL
-# IPQQtHk=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA3MTAwMDAz
+# WjAvBgkqhkiG9w0BCQQxIgQg+mavvWXD3YCl5n4E15Smwex7TxbIk5BP1C8FGvs5
+# 2oAwDQYJKoZIhvcNAQEBBQAEggIAHFjOIegUz46q6361aeEUFpVYGrv0dcu3qgDl
+# gAEjtJcNPZX/d7yOABY0b2dM1kM9Nyfd7UoUTD/PSlC37dCM4PEuiIYpZzXpYSpV
+# Gm/9ijVafrRJWDQifpdGZ8ZnILagPYZV1xSy9B80T4l78kCFKIVggAezYE2AtHYq
+# bJ1R7uBQLScdSXyir4IQKvpqCfJeQummTv5/v/RpAzMyqFJz1zvYdjGskcaYS2x2
+# WRO3VASFtepMRz9xqwNn3uXxa2CRBf6f/gYOxYGusmcek518oCWMpiFe+QQoElNE
+# W8NKYduTsjCxlzjvAF7ogejc5EKkM2fWTq7jf9BmRS6eKcypIT8wKy4mwf0LI2Eu
+# 4+yMKyb9z1NFjr2egj+ubt2ZdWKSAPkhS7vMdLYLuWh0EvdCZUOgtOqJ7MrnxWAf
+# z/b1b5D7pNBXMy9gybBc0/XO4/eERvQplfCHiPcG+qUJbaODtd4miuDnr1IpmM+5
+# 7a9YFmjLhQMSg0u0OM86TwkuGWQf0RW33Yl7x4UZQYeVtWYxgljNZ7Arlfaf53px
+# 0zhSWUXAFMy6sAB+uQABjUHU0re/IzFKjxwrWIAABhobuf4gSG2gNs3Blt41eZ0I
+# S37Jh0a4E3yJOidgmASbxsyCWafRROCVSNxwtDqBaBJEUJAW/K1Qt4gCyg5vkJm/
+# zbUuYsc=
 # SIG # End signature block
