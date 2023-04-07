@@ -49,13 +49,13 @@
     foreach ($EventSource in @('PowerShell Update CRL'))
     {
         #Check registered event source exist with:
-        [System.Diagnostics.EventLog]::SourceExists($EventSource)
+        [Diagnostics.EventLog]::SourceExists($EventSource)
 
         #Check which log registered event source is registered under
-        [System.Diagnostics.EventLog]::LogNameFromSourceName($EventSource,'.')
+        [Diagnostics.EventLog]::LogNameFromSourceName($EventSource,'.')
 
         #Remove registered event with:
-        #[System.Diagnostics.EventLog]::DeleteEventSource($EventSource)
+        #[Diagnostics.EventLog]::DeleteEventSource($EventSource)
     }
 #>
 
@@ -185,33 +185,33 @@ try
 
         # Get hash oid
         $HashOidCollection = New-Object Security.Cryptography.OidCollection
-        $HashOidCollection.Add((New-Object System.Security.Cryptography.Oid("1.3.14.3.2.26", $HashAlgorithm))) > $null
+        $HashOidCollection.Add((New-Object Security.Cryptography.Oid("1.3.14.3.2.26", $HashAlgorithm))) > $null
         $HashRawData = (New-Object Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension $HashOidCollection, $false).RawData
 
         switch($HashAlgorithm)
         {
             'MD5'
             {
-                $HashObject = [System.Security.Cryptography.MD5]::Create()
+                $HashObject = [Security.Cryptography.MD5]::Create()
             }
 
             'SHA256'
             {
-                $HashObject = [System.Security.Cryptography.SHA256]::Create()
+                $HashObject = [Security.Cryptography.SHA256]::Create()
             }
 
             default
             {
-                $HashObject = [System.Security.Cryptography.SHA1]::Create()
+                $HashObject = [Security.Cryptography.SHA1]::Create()
             }
         }
 
         # https://www.rfc-editor.org/rfc/rfc6960.html#section-4.1.1
         Write-Output -InputObject (
 
-            [System.Uri]::EscapeDataString(
+            [Uri]::EscapeDataString(
 
-                [System.Convert]::ToBase64String((
+                [Convert]::ToBase64String((
 
                     # OcspRequest
                     New-ASN1Structure -Structure 'Sequence' -RawData (
@@ -249,7 +249,28 @@ try
         )
     }
 
-    function New-Sha256Hash
+    function Get-OcspRequestParams
+    {
+        param
+        (
+            [Parameter(Mandatory=$true)]
+            [Security.Cryptography.X509Certificates.X509Certificate]$Certificate
+        )
+
+        # Create x509Chain
+        $X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+        $X509Chain.ChainPolicy.RevocationMode = "NoCheck"
+        $X509Chain.Build($Certificate) > $null
+
+        Write-Output -InputObject @{
+
+            IssuerName = $Certificate.IssuerName.RawData
+            IssuerKey = $X509Chain.ChainElements[1].Certificate.PublicKey.EncodedKeyValue.RawData
+            SerialNumber = $Certificate.SerialNumber -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }
+        }
+    }
+
+    function Convert-ToSha256Base64Url
     {
         param
         (
@@ -259,12 +280,12 @@ try
 
         begin
         {
-            $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+            $Sha256 = [Security.Cryptography.SHA256]::Create()
         }
 
         process
         {
-            Write-Output -InputObject ([System.Uri]::EscapeDataString([System.Convert]::ToBase64String($Sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($String)))))
+            Write-Output -InputObject ([Uri]::EscapeDataString([Convert]::ToBase64String($Sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($String)))))
         }
 
         end
@@ -351,7 +372,7 @@ try
         if ($Cert.Extensions['2.5.29.31'])
         {
             # Decode cdp extension
-            $CdpUrl = (New-Object System.Security.Cryptography.AsnEncodedData(
+            $CdpUrl = (New-Object Security.Cryptography.AsnEncodedData(
                 '2.5.29.31',
                 $Cert.Extensions['2.5.29.31'].RawData
 
@@ -372,7 +393,7 @@ try
         if  ($Cert.Extensions['1.3.6.1.5.5.7.1.1'])
         {
             # Decode aia extension
-            $OcspUrl = (New-Object System.Security.Cryptography.AsnEncodedData(
+            $OcspUrl = (New-Object Security.Cryptography.AsnEncodedData(
                 '1.3.6.1.5.5.7.1.1',
                 $Cert.Extensions['1.3.6.1.5.5.7.1.1'].RawData
 
@@ -381,22 +402,9 @@ try
 
             if ($OcspUrl)
             {
-                # Create x509Chain
-                #$X509Chain = New-Object Security.Cryptography.X509Certificates.X509Chain
-                #$X509Chain.ChainPolicy.RevocationMode = "NoCheck"
-                #$X509Chain.Build($Cert) > $null
-
-                $OcspInfo =
-                @{
-                    Url = $OcspUrl
-                    #IssuerName = $Cert.IssuerName.RawData
-                    #IssuerKey = $X509Chain.ChainElements[1].Certificate.PublicKey.EncodedKeyValue.RawData
-                    #SerialNumber = $Cert.SerialNumber -split "([a-f0-9]{2})" | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }
-                }
-
                 if (-not $OcspHashtable.Contains("$CdpUrl"))
                 {
-                    $OcspHashtable.Add("$CdpUrl", $OcspInfo)
+                    $OcspHashtable.Add("$CdpUrl", (@{ Url = $OcspUrl } + (Get-OcspRequestParams -Certificate $Cert)))
                 }
             }
         }
@@ -418,7 +426,7 @@ try
             $ETag = $Head.Headers["ETag"] | Where-Object { $_ -match '"(.*):0"' } | ForEach-Object { $Matches[1] }
 
             # Get old etag
-            $OldETag = [System.Environment]::GetEnvironmentVariable("Crl_$(New-Sha256Hash -String $Cdp.Value.Url)_ETag", 'User')
+            $OldETag = [Environment]::GetEnvironmentVariable("Crl_$(Convert-ToSha256Base64Url -String $Cdp.Value.Url)_ETag", 'User')
 
             # Check if to download crl
             if(-not $ETag -or $ETag -ne $OldETag)
@@ -484,7 +492,7 @@ try
                         if($ETag)
                         {
                             # Remember etag
-                            [System.Environment]::SetEnvironmentVariable("Crl_$(New-Sha256Hash -String $Cdp.Value.Url)_ETag", $ETag, 'User')
+                            [Environment]::SetEnvironmentVariable("Crl_$(Convert-ToSha256Base64Url -String $Cdp.Value.Url)_ETag", $ETag, 'User')
                         }
                     }
 
@@ -503,8 +511,8 @@ catch
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUWmtkk7HWc1xDM5MVJfTVATlP
-# DnigghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUcwBThJKxoDuz75AlaLBymsZH
+# TmKgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -635,34 +643,34 @@ catch
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUg8WMBosc
-# c/Nh4JVmvG5Gd41fG/0wDQYJKoZIhvcNAQEBBQAEggIAhiZDy+RfYJxRwtpMmE1W
-# nc8wvWMZJbLuKs8iE+il3phh0nW0GGArONdYMdKL96X138kCqYNdQH822r5IZ9d0
-# R5mEc5jRn7aocWRrpSZGOByUfii3Ja7H5pmTR/AyUFI7HvybxS6dml9b/vFYRHXT
-# w54lGAqfiG2WIo84Y5pNYKmfTSJJ0Q+m3XjvjMmvb9U4bm1QYOQL3YOZ6CWyUeCP
-# P6u1Qwgjx2sn9taP7p6pb5aKJFMW9mthFcG5YcMUhafa4AWufCY4LAo0JXqmCZAE
-# F/U1N7VVr2apuvwfF7pDE1HTj64gxJgbKhdYcJi46P6xeEYCxkWin0LjJGaquxDy
-# r8ioUwLQ5Gv+M+Yl+QJvN9maBg4HFvBPVqJHlmxC64LAgHdzdBMXTnk/Bxdmy3Se
-# nT0maAEbvf4vE1IzI9wLSNMmHBxtsJ5SFKxdDOLMeSCd0bOINDR2e4Jn/4/YghB1
-# D2QKWUuJ8GUaRgOhCgprBgxzkQQJlEmQHWmREhW9PhZDk9Z2K76CUbTqNJq6UOku
-# dxmbu/fJXaR7tClT321xh4Sk2enObKuQN1LeZHMqPrKNZgFD31WWQ0EDWoGex/82
-# pd9qz52X8cIHM0DPfJLW0jyV5JO/Tf04UqTTX90aPjPpmpm8bg5hlQKpS5/IT12z
-# MUTVv4/ez8lYUNgyQ44chN6hggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU0tkFZcPh
+# N/yzoSEdjugLOWKf4nowDQYJKoZIhvcNAQEBBQAEggIAhzS+uWytnUptQpeHokXn
+# VgVpvJqg5KYprQBmLV5nX6ZnYxIwgqcR09Q5Kyzx0UKKbCssG+oZ/JzIvRcUPHHU
+# 7sor/CoylhH62jlqC5L3LagAzeHOxu7jTxASxgw2qt/80siNXGCIL0Y8fc3vt0s0
+# 4Xo4cbIEINLn0AHX+5MpMsjcIeSX0yT78iz0qRE0+Pe96g6uCXsxFnKnZsJ8V5OC
+# zn+ZjsmocI+UmWMZtcuyIYUNZBXt4rPJimKMu/8nKZj7N8lxsjax/gwwO44PqUJ+
+# 4463DvxnNRXoyRu1U2GAX3qV+WtIQmfSfpfYuzkchnWjB3JVNtlFn2gRz0ArBmYR
+# k8MqJPg5pOlu9HgRuRXQVd1MhWkReEKro7XikLo1W/bvgo0KHxxddUs0d7meT8PA
+# jghrBElMgpe1+svf5aTljHVvRzx4xmwmPDNxVZjGkeaYJl7IUp/jlT/9BBGF25r8
+# 9XegJvHDnKq8xlZuXu9qQR3guCfW5HV1Pvp2odElBRDZfA9EVt5vdIP/B4FAlI3a
+# 4rqM7/QmatXG02+gP5FokM0PfHbR/be5jcguaWZ5ui9u8fTUgnMVwTejB7netKHr
+# /IngAuBlRr/ZxBihi/jUQX53ZAUQ/HvA40pEM0LWkVfVDf7WJ42xMgI0V860NcC+
+# lvYzzVfkEsJCasqlZcNokwShggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA2MTIwMDAy
-# WjAvBgkqhkiG9w0BCQQxIgQgXhHNs9/Gwrp4vT23aUFhL9dpkLLTVObLtO9kCSz7
-# OxkwDQYJKoZIhvcNAQEBBQAEggIAjoys1ulkESuWqfPsnlF/jxxu4SU6sze4seqM
-# zO4xFgzkdPkz07/dVWo6arYaKLGIKgPaY/eL9Q2hohgoUdNRDZ0wT/qrgxd1D8xb
-# a/1EycSjRyhMSLI0jmcIHSwJyxAWpzddv8GRH/4dyoOcIRttLIJAp7adkwezPL+z
-# KqpLeoZXedpXaVx/fw4NmU2IvUCYN/rRrf8NujVR9Q6BiXjG7p+ao6i/71IICIzn
-# eGBGELBIwqtiws7MAYtvwTeWvDidlhtmFAwkGl0VcxfNEtKnziJucXhMAD2wZc8g
-# vXqMWl6CEOyRkhydN19iIPGt461tEC3LMUjwIkFjTdAQGKlEM7ER7ddaJ0VjHcoD
-# eWav36kj5AWBxaRr2PkS+nqTVUXp1TAmscVuxAAOWhhdCk+n2XNyQZKODnnocsR4
-# kHI+DgJkN0LzSjh3op1VeGjyDtmBlfeeRFZLTE8MfrKuVFdR5eNxTWo238+KEPd4
-# 2+VZUDn1fHNZCgNS49WEdU8sSzjLxgydzSe+FTBC/ccOcHvvucVX3ib5cate4khe
-# qzrHhnICaB1sT8w4LM1zcJVHI3iR5wgct3Vqjr9//yVMQYCKgz3fEKMFbvC0txb0
-# k3M1Hk1CuZ8oUQR0cAhparyATZVGU8aUHewLAOZgzEPjENS+9tCzL9sPnDyH50z0
-# S7oJx6w=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA3MDAwMDA0
+# WjAvBgkqhkiG9w0BCQQxIgQgIMc5fBa3BYLqvQo7AvNgOh/CVc/WF9dgY3B0P98t
+# 26YwDQYJKoZIhvcNAQEBBQAEggIAjiEmeTrXjg+pGr5SA+IEdgmszqVdt90Q6xi6
+# kyWnCnfpIsOuwU0LFmknvOKaF2ASb8DxnQ/ZKiUxG9jWSu4X5rf4ie60+8SizWlk
+# NXNX1kAubB1kBqH2I84gY1rsohXH2QTIQjf7vkVX16RgYqRqfwLXBeq21d4haEGF
+# jakW4OfULcJp7FJtnjTIuARVGaNRymHMgGm4XhVHECs8YiYrT5aD9VUUJYSVn428
+# hoUrIjfddtM0OPT7B/u5KkKGp/rTB5DnS5h/vPeHf3u5uOa3vwlnw+CL7IUVDZjY
+# eDaIMCR/Wt5lhKpAx6Acp6qT56QEyKkD9QEuDIMiJPMU8LdDAIvOvw3wsnqwpyYK
+# wCgWhuxZkNsxgbGV943+BAasjmHupT7NT3Bcboe36K/t6/bnV5kUq0l6gXHPlklJ
+# w7kdTczJu5JO21mkAPPA+gWBtSJg15n26BVp/7kIfEHDbqWTKu8DAS+coBWf2DY2
+# XvW7IORPH8CQhWq9AxgpmTRyqrgAkpHBoMa6GbY0VdvARUQI6m98h8PT8IcV9PCs
+# ZrwKVj5XgAeX3Fp/mxfuN7t8Mjgv4lXUi+W3Rgb77XUQSTI51Pe7hjn7qPl+JFD2
+# D8B2yPMerQJqqh6WyFhtiJ7xK8PhdNY6ZjFse8+IB1KMtt2VR1HLdgG8BLOWZrg3
+# tk/hiU8=
 # SIG # End signature block
