@@ -169,7 +169,7 @@ try
         Write-Output -InputObject (,$StructureHash[$Structure] + $ComputedRawData)
     }
 
-    function New-OcspRequest
+    function New-EncodedOcspRequest
     {
         param
         (
@@ -249,7 +249,7 @@ try
         )
     }
 
-    function Get-OcspRequestParams
+    function Get-OcspRequestRawData
     {
         param
         (
@@ -270,7 +270,7 @@ try
         }
     }
 
-    function Convert-ToSha256Base64Url
+    function Convert-ToMD5Base64Url
     {
         param
         (
@@ -280,17 +280,17 @@ try
 
         begin
         {
-            $Sha256 = [Security.Cryptography.SHA256]::Create()
+            $MD5 = [Security.Cryptography.MD5]::Create()
         }
 
         process
         {
-            Write-Output -InputObject ([Uri]::EscapeDataString([Convert]::ToBase64String($Sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($String)))))
+            Write-Output -InputObject ([Uri]::EscapeDataString([Convert]::ToBase64String($MD5.ComputeHash([Text.Encoding]::UTF8.GetBytes($String)))))
         }
 
         end
         {
-            $Sha256.Dispose()
+            $MD5.Dispose()
         }
     }
 
@@ -404,7 +404,7 @@ try
             {
                 if (-not $OcspHashtable.Contains("$CdpUrl"))
                 {
-                    $OcspHashtable.Add("$CdpUrl", (@{ Url = $OcspUrl } + (Get-OcspRequestParams -Certificate $Cert)))
+                    $OcspHashtable.Add("$CdpUrl", @{ Url = $OcspUrl })
                 }
             }
         }
@@ -426,7 +426,7 @@ try
             $ETag = $Head.Headers["ETag"] | Where-Object { $_ -match '"(.*):0"' } | ForEach-Object { $Matches[1] }
 
             # Get old etag
-            $OldETag = [Environment]::GetEnvironmentVariable("Crl_$(Convert-ToSha256Base64Url -String $Cdp.Value.Url)_ETag", 'User')
+            $OldETag = [Environment]::GetEnvironmentVariable("Crl_$(Convert-ToMD5Base64Url -String $Cdp.Value.Url)_ETag", 'User')
 
             # Check if to download crl
             if(-not $ETag -or $ETag -ne $OldETag)
@@ -440,7 +440,6 @@ try
                     # Get filename
                     $CdpFile = $Cdp.Value.Url.Substring($Cdp.Value.Url.LastIndexOf('/') + 1)
                     $CdpIssuerCn = $Cdp.Value.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] }
-
 
                     # Save crl to temp
                     Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
@@ -481,18 +480,18 @@ try
                         certutil -addstore ca "$env:TEMP\$CdpFile" > $null
 
                         # Remove crl cache
-                        certutil -urlcache "$([Uri]::EscapeUriString($Cdp.Value.Url))" delete
+                        certutil -urlcache "$([Uri]::EscapeUriString($Cdp.Value.Url))" delete > $null
 
                         # Check ocsp
                         if ($OcspHashtable.Contains($Cdp.Name))
                         {
-                            certutil -urlcache $OcspHashtable.Item($Cdp.Name).Url delete
+                            certutil -urlcache $OcspHashtable.Item($Cdp.Name).Url delete > $null
                         }
 
                         if($ETag)
                         {
                             # Remember etag
-                            [Environment]::SetEnvironmentVariable("Crl_$(Convert-ToSha256Base64Url -String $Cdp.Value.Url)_ETag", $ETag, 'User')
+                            [Environment]::SetEnvironmentVariable("Crl_$(Convert-ToMD5Base64Url -String $Cdp.Value.Url)_ETag", $ETag, 'User')
                         }
                     }
 
@@ -511,8 +510,8 @@ catch
 # SIG # Begin signature block
 # MIIekQYJKoZIhvcNAQcCoIIegjCCHn4CAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUcwBThJKxoDuz75AlaLBymsZH
-# TmKgghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUbyi1oGYDpTvjOV2kNdXb/iwY
+# LbigghgSMIIFBzCCAu+gAwIBAgIQJTSMe3EEUZZAAWO1zNUfWTANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMTA2MDcxMjUwMzZaFw0yMzA2MDcx
 # MzAwMzNaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEAzdFz3tD9N0VebymwxbB7s+YMLFKK9LlPcOyyFbAoRnYKVuF7Q6Zi
@@ -643,34 +642,34 @@ catch
 # TE0AotjWAQ64i+7m4HJViSwnGWH2dwGMMYIF6TCCBeUCAQEwJDAQMQ4wDAYDVQQD
 # DAVKME43RQIQJTSMe3EEUZZAAWO1zNUfWTAJBgUrDgMCGgUAoHgwGAYKKwYBBAGC
 # NwIBDDEKMAigAoAAoQKAADAZBgkqhkiG9w0BCQMxDAYKKwYBBAGCNwIBBDAcBgor
-# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQU0tkFZcPh
-# N/yzoSEdjugLOWKf4nowDQYJKoZIhvcNAQEBBQAEggIAhzS+uWytnUptQpeHokXn
-# VgVpvJqg5KYprQBmLV5nX6ZnYxIwgqcR09Q5Kyzx0UKKbCssG+oZ/JzIvRcUPHHU
-# 7sor/CoylhH62jlqC5L3LagAzeHOxu7jTxASxgw2qt/80siNXGCIL0Y8fc3vt0s0
-# 4Xo4cbIEINLn0AHX+5MpMsjcIeSX0yT78iz0qRE0+Pe96g6uCXsxFnKnZsJ8V5OC
-# zn+ZjsmocI+UmWMZtcuyIYUNZBXt4rPJimKMu/8nKZj7N8lxsjax/gwwO44PqUJ+
-# 4463DvxnNRXoyRu1U2GAX3qV+WtIQmfSfpfYuzkchnWjB3JVNtlFn2gRz0ArBmYR
-# k8MqJPg5pOlu9HgRuRXQVd1MhWkReEKro7XikLo1W/bvgo0KHxxddUs0d7meT8PA
-# jghrBElMgpe1+svf5aTljHVvRzx4xmwmPDNxVZjGkeaYJl7IUp/jlT/9BBGF25r8
-# 9XegJvHDnKq8xlZuXu9qQR3guCfW5HV1Pvp2odElBRDZfA9EVt5vdIP/B4FAlI3a
-# 4rqM7/QmatXG02+gP5FokM0PfHbR/be5jcguaWZ5ui9u8fTUgnMVwTejB7netKHr
-# /IngAuBlRr/ZxBihi/jUQX53ZAUQ/HvA40pEM0LWkVfVDf7WJ42xMgI0V860NcC+
-# lvYzzVfkEsJCasqlZcNokwShggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
+# BgEEAYI3AgELMQ4wDAYKKwYBBAGCNwIBFTAjBgkqhkiG9w0BCQQxFgQUXdh9u1yb
+# MLdSc8JCdiiK56lscnMwDQYJKoZIhvcNAQEBBQAEggIADl0G/rvd6SQRX4UPT3fq
+# mUHKoUTP9cYj9Ezx71fOyPTYYsKcdJdEhhqysw+ITFHw/innSGIgXH3bV4ZQca/m
+# 1vJHKHy0MkMiuebYHS3sCDCobuVNGBhbyhfZMYso+430bmEa4IvlZvOCfy3KUDfv
+# blOGD+BdWNpdCRvk6mwyUUGYU1yves0XAkLN81MZsQBWm0CfY8A8UUwlUExkoBxe
+# H0XW5YzIS8/k+D8KfY7aWy74iLtLJhpqTbmfSnALKcRl1o26HLocXAnueR6OEEDY
+# x0j3SFiyDhBiggqbHMzQrCKHxRhjiX3HIVILoEdQ14qWQQpW7QIOijpuKDPKp75b
+# mZpnanvmzq30K/FSCeI8gH/WXc/0796uNaUgLtldrGy7OcnRyxcMRa1RK44Nn89B
+# 6lH5Yzub1UrzEo6Lf911nB72XaBW57ADv3TFQtOClblrZHCmIbYF1QWe66QxAOrm
+# ElxMHeGehf/LKNY/7Cls4uMcIbLBEkuaw+jaT4Oi9vAFfv4r3MbWVwUeArIMRt8R
+# BsXssIZ1yFGEiKK8xJpX7NSyuy7Hu2YjF3LwI3x5KimlShGSK52XWRcUclFoxuEi
+# hdKIzAE+xB8Xx512Aa8O9VVCb7zcoCsj3Qcp0rGb64uNooRUc1IQdYPD3DNL7nBh
+# FVLSHxplmQYaQuIasNSx5tGhggMgMIIDHAYJKoZIhvcNAQkGMYIDDTCCAwkCAQEw
 # dzBjMQswCQYDVQQGEwJVUzEXMBUGA1UEChMORGlnaUNlcnQsIEluYy4xOzA5BgNV
 # BAMTMkRpZ2lDZXJ0IFRydXN0ZWQgRzQgUlNBNDA5NiBTSEEyNTYgVGltZVN0YW1w
 # aW5nIENBAhAMTWlyS5T6PCpKPSkHgD1aMA0GCWCGSAFlAwQCAQUAoGkwGAYJKoZI
-# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA3MDAwMDA0
-# WjAvBgkqhkiG9w0BCQQxIgQgIMc5fBa3BYLqvQo7AvNgOh/CVc/WF9dgY3B0P98t
-# 26YwDQYJKoZIhvcNAQEBBQAEggIAjiEmeTrXjg+pGr5SA+IEdgmszqVdt90Q6xi6
-# kyWnCnfpIsOuwU0LFmknvOKaF2ASb8DxnQ/ZKiUxG9jWSu4X5rf4ie60+8SizWlk
-# NXNX1kAubB1kBqH2I84gY1rsohXH2QTIQjf7vkVX16RgYqRqfwLXBeq21d4haEGF
-# jakW4OfULcJp7FJtnjTIuARVGaNRymHMgGm4XhVHECs8YiYrT5aD9VUUJYSVn428
-# hoUrIjfddtM0OPT7B/u5KkKGp/rTB5DnS5h/vPeHf3u5uOa3vwlnw+CL7IUVDZjY
-# eDaIMCR/Wt5lhKpAx6Acp6qT56QEyKkD9QEuDIMiJPMU8LdDAIvOvw3wsnqwpyYK
-# wCgWhuxZkNsxgbGV943+BAasjmHupT7NT3Bcboe36K/t6/bnV5kUq0l6gXHPlklJ
-# w7kdTczJu5JO21mkAPPA+gWBtSJg15n26BVp/7kIfEHDbqWTKu8DAS+coBWf2DY2
-# XvW7IORPH8CQhWq9AxgpmTRyqrgAkpHBoMa6GbY0VdvARUQI6m98h8PT8IcV9PCs
-# ZrwKVj5XgAeX3Fp/mxfuN7t8Mjgv4lXUi+W3Rgb77XUQSTI51Pe7hjn7qPl+JFD2
-# D8B2yPMerQJqqh6WyFhtiJ7xK8PhdNY6ZjFse8+IB1KMtt2VR1HLdgG8BLOWZrg3
-# tk/hiU8=
+# hvcNAQkDMQsGCSqGSIb3DQEHATAcBgkqhkiG9w0BCQUxDxcNMjMwNDA3MDAwMTA5
+# WjAvBgkqhkiG9w0BCQQxIgQg3SuIoGK4PMfNOxFA8my1PlX+Od1YIxFplNxUBTfW
+# 0C8wDQYJKoZIhvcNAQEBBQAEggIARgkPLLkZYUIn6TeKg6u6FbGy5WyiiiKgN6wB
+# djg/baKYDVf6EFb0zgbfJr0TfSPw80etcyrnFSM06Tzjs93onr1DIDOMZV/ezFAa
+# DBxeymIi75ikuGNXMO+AS13J7xmPET9vE3AteF9Oi+tItMJEjy7QcfjagdMpQ/mG
+# hkr2mdCs6sW9Ke0NsJqGHCvh5AOz+od9smCDM+KmvuEQ4mLRt4GUzErkJh/OXExb
+# kGoQ1Yy6dDuHbuxLPgcqY79dwiY0+RVBRoT+IQaXsmWn82wJgZFX1XqtfsoZzTS2
+# Zspb/cj6qBO1G8naRR5RG5HEQIn6Z2PpbNahPZ7of3VMKDoeZwnI9s0BL9F9iaK8
+# aTQfpKK3zby4H/3520zyR5cCA+zcLMcjbQj/hCcltKqpOkla1oOZJK4HZtxPrC9k
+# 2CqrOyt0I5hYQVDTBJne7ymZaSGErlYntc0EvltsLdC6U5JpRO1aCucwCmHFQTcJ
+# Wmv/lbQQj4Xyd+OPvUfBJq5gKiUZpwelLWSnN5M0FMG0YmGTLTzbgojeGh4vJtap
+# nEdoCdan7rG7jDbJIoWlE5lyyqKGtt9HWkXHZuvA2tEcNOEJ3g8Re6sdlpdboQDt
+# s8D86b5l5u5CdmrwBDkY6u0n5PVsHNceRT/tHzfY8xQNZJaC3oikOx91VrCQnCrL
+# IPQQtHk=
 # SIG # End signature block
