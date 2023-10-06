@@ -361,10 +361,12 @@ try
 
                 if (-not $CdpHashtable.Contains("$CdpUrl"))
                 {
+                    $Issuer = $Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] }
+
                     $CdpHashtable.Add("$CdpUrl", @{
 
-                        Url = $CdpUrl
-                        Issuer = $Cert.Issuer | Where-Object { $_ -match 'CN=(.*?)(?:,|$)' } | ForEach-Object { $Matches[1] }
+                        Issuer = $Issuer
+                        IssuerNoSpace = $Issuer.Replace(' ', '_')
                     })
                 }
             }
@@ -398,32 +400,29 @@ try
     foreach($Cdp in $CdpHashtable.GetEnumerator())
     {
         # Get cdp header
-        $Head = Try-WebRequest -Uri "$($Cdp.Value.Url)" -Method Head
+        $Head = Try-WebRequest -Uri "$($Cdp.Key)" -Method Head
 
         # Header request successfull
         if ($Head -and $Head.StatusCode -eq '200')
         {
             # Get etag from header
             $ETag = $Head.Headers["ETag"] | Where-Object { $_ -match '"(.*?)"' } | ForEach-Object { $Matches[1] }
-
             $ETag = $null
-            Write-Verbose -Verbose -Message "ETag $ETag"
 
             # Get old etag
-            $IssuerNoSpace = $Cdp.Value.Issuer.Replace(' ', '_')
-            $OldETag = [Environment]::GetEnvironmentVariable("Crl_$($IssuerNoSpace)_ETag", 'User')
+            $OldETag = [Environment]::GetEnvironmentVariable("Crl_$($Cdp.Value.IssuerNoSpace)_ETag", 'User')
 
             # Check if to download crl
             if(-not $ETag -or $ETag -ne $OldETag)
             {
                 # Request crl
-                $Request = Try-WebRequest -Uri "$($Cdp.Value.Url)"
+                $Request = Try-WebRequest -Uri "$($Cdp.Key)"
 
                 # Request successfull
                 if($Request -and $Request.StatusCode -eq '200')
                 {
                     # Get filename
-                    $CdpFile = $Cdp.Value.Url.Substring($Cdp.Value.Url.LastIndexOf('/') + 1)
+                    $CdpFile = $Cdp.Key.Substring($Cdp.Key.LastIndexOf('/') + 1)
 
                     # Save crl to temp
                     Set-Content -Value $Request.Content -LiteralPath "$env:TEMP\$CdpFile" -Encoding Byte
@@ -433,8 +432,8 @@ try
                         # Initialize
                         $OldCrlNumber = $null
 
-                        # Check old and new crl
-                        foreach ($Arg in "-store ca `"$($Cdp.Value.Issuer)`"", "`"$env:TEMP\$CdpFile`"")
+                        # Check store crl and downloaded crl
+                        foreach ($Arg in "-user -store ca `"$($Cdp.Value.Issuer)`"", "`"$env:TEMP\$CdpFile`"")
                         {
                             # Get crl number
                             $CrlNumber = Invoke-Expression -Command "certutil $Arg" | Where-Object { $_ -match 'CRL Number=(.*)$' } | ForEach-Object { $Matches[1] }
@@ -448,15 +447,12 @@ try
                             $CrlNumber = [uint32] "0x$CrlNumber"
 
                             # Set old crl number
-                            if (-not $OldCrlNumber)
+                            if ($OldCrlNumber -like $null)
                             {
                                 $OldCrlNumber = $CrlNumber
                             }
                         }
                     }
-
-                    Write-Verbose -Verbose -Message "CrlNumber = $CrlNumber"
-                    Write-Verbose -Verbose -Message "OldCrlNumber = $OldCrlNumber"
 
                     if($ETag -or $CrlNumber -gt $OldCrlNumber)
                     {
@@ -478,7 +474,7 @@ try
                         if($ETag)
                         {
                             # Remember etag
-                            [Environment]::SetEnvironmentVariable("Crl_$($IssuerNoSpace)_ETag", $ETag, 'User')
+                            [Environment]::SetEnvironmentVariable("Crl_$($Cdp.Value.IssuerNoSpace)_ETag", $ETag, 'User')
                         }
                     }
 
@@ -500,14 +496,14 @@ try
 }
 catch
 {
-   Write-Log -EntryType Error -Message $_
+   Write-Log -EntryType Error -Message "$_ $($_.ScriptStackTrace)"
 }
 
 # SIG # Begin signature block
 # MIIekwYJKoZIhvcNAQcCoIIehDCCHoACAQExCzAJBgUrDgMCGgUAMGkGCisGAQQB
 # gjcCAQSgWzBZMDQGCisGAQQBgjcCAR4wJgIDAQAABBAfzDtgWUsITrck0sYpfvNR
-# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUSsNiBSgJblaCmLkA3/BpDQKM
-# 9RigghgUMIIFBzCCAu+gAwIBAgIQdFzLNL2pfZhJwaOXpCuimDANBgkqhkiG9w0B
+# AgEAAgEAAgEAAgEAAgEAMCEwCQYFKw4DAhoFAAQUDBV7QxmwKj7dwuQ3sUAL5Dsh
+# VWmgghgUMIIFBzCCAu+gAwIBAgIQdFzLNL2pfZhJwaOXpCuimDANBgkqhkiG9w0B
 # AQsFADAQMQ4wDAYDVQQDDAVKME43RTAeFw0yMzA5MDcxODU5NDVaFw0yODA5MDcx
 # OTA5NDRaMBAxDjAMBgNVBAMMBUowTjdFMIICIjANBgkqhkiG9w0BAQEFAAOCAg8A
 # MIICCgKCAgEA0cNYCTtcJ6XUSG6laNYH7JzFfJMTiQafxQ1dV8cjdJ4ysJXAOs8r
@@ -638,34 +634,34 @@ catch
 # c7aZ+WssBkbvQR7w8F/g29mtkIBEr4AQQYoxggXpMIIF5QIBATAkMBAxDjAMBgNV
 # BAMMBUowTjdFAhB0XMs0val9mEnBo5ekK6KYMAkGBSsOAwIaBQCgeDAYBgorBgEE
 # AYI3AgEMMQowCKACgAChAoAAMBkGCSqGSIb3DQEJAzEMBgorBgEEAYI3AgEEMBwG
-# CisGAQQBgjcCAQsxDjAMBgorBgEEAYI3AgEVMCMGCSqGSIb3DQEJBDEWBBSGuQmo
-# EUuImPyB2/nENoBJpkl9ITANBgkqhkiG9w0BAQEFAASCAgAGWB/xVpCYQlyTw2mY
-# CpdErLhjMIpc/5dAzq+cL/t4xftxWR3A3AlhTSR5gPa0LYDo6kr7CrBQSkfbX9Ec
-# k1eLTO/HbP7ZiE+KyZuPClcrZ6NOGBh4aYU54nxAQ9uXB/mcE7BuNukL/F8dytoo
-# u3O/MaOQfeCMAq2bGppS6sGuLtnmHCUvRqrOMM0b7i5iBlmvhV0NJ48nVYMq/zJQ
-# MUOIVXNIHZISz+P3zTAx6/nzqGsNdlwsBFu8ai878sxTisAHSy//BG4aLZQsS6bN
-# 6e+EKbMwQpkBjlbqLLeQ9WqqxcD3A7xYeHukXgOvH+411ZQjK2Cy5VqETjdh35Fm
-# GfPbMIsNImrlt3CT1sRTCE2WJ/JxsNklb64QR9dtRQRRhrKh3Y9i8J6a1N/x6wJR
-# FnBOI8MBcCqeXjJJRoEt9/AK7oCwVtQigm5LQQ22Y3C1PizoJEOyXEuyPcO+geth
-# EWrJNMke24PmBq5zyWMO6rdWD2fcIylgzoooIB6pmJiOPxdqPIAfnzcS22z4zaY/
-# B9NXDgzWByyM5YaWFBuGGX++NSzoufhz1VB0hf/s9m8h9GRegeIGr/o9Z76Cq2M8
-# DOrv+Gwy/sRWCawRJixapmCIZUYzFKWVQBLHDv1NLzj9wTMIMreu1BEXVByNtebD
-# Dz3CAPiV2WYY0YXp/IXgQNtxM6GCAyAwggMcBgkqhkiG9w0BCQYxggMNMIIDCQIB
+# CisGAQQBgjcCAQsxDjAMBgorBgEEAYI3AgEVMCMGCSqGSIb3DQEJBDEWBBTAwnEB
+# hgr0wkCJ8JumqkIHRIcvkDANBgkqhkiG9w0BAQEFAASCAgDPTsJIDg2jED+5Oe1R
+# ZlwCnAFY51DkCJdIFohCYfKmVDhvO7QfmMSsd2tNssNSsWyQEk2QaNP2WI8sP7uY
+# nKVqH75SAsb2I5lWAUqmXqr7bu02mVb2qvT9AUmUiu1uToog3eDHNbr9zLKYXboU
+# 1eFGzuuIFKk6++nLL79O9FVrVsMFQhAgMBPHgu3qYSnefFKXdUzmZGbtqfECJD+z
+# 7EKLfYAYfhiDrp10+GLLNos7yZQMd5QoxEYbWD+MGSjcpbZVo/XPmxKq1JLz4fTa
+# MT9T8AAQrbiwcH7uKkUZflzNds1+FfjJz2oYP/WxCo+dTHIQWSmQErdB6OmGSDyb
+# cz2CpAF3Hc4pu4FSPokJchmuwsBOWKqGluJra9FAgVfLPnM8oOYggrIrQB49khw9
+# b1YY8s4fJMqEfjHCl9MAx5bkRlb+mowmVz1LTJepuJa+nhBCPKdGGCIacUnuuK55
+# pwSqvgSsILuIo0E/Eo28CoAkT45MoVyojDYTJ63i69KMUYPNh/HETjGb7Wu2+RYf
+# VmqbBl5cv1BLemff96GRdPYGjS5rg3Fn9vstmqHGnz9vJT96hjHK2sMUYv4bPsGm
+# ViHPTNLvAEJ/hKdzn+Kd5yR1CL9SKdiszUMd+dWwDsC4Jopkcd09pVRU2YH42xPP
+# vV0CF0tLunh8WoXP4zuGtuW/JqGCAyAwggMcBgkqhkiG9w0BCQYxggMNMIIDCQIB
 # ATB3MGMxCzAJBgNVBAYTAlVTMRcwFQYDVQQKEw5EaWdpQ2VydCwgSW5jLjE7MDkG
 # A1UEAxMyRGlnaUNlcnQgVHJ1c3RlZCBHNCBSU0E0MDk2IFNIQTI1NiBUaW1lU3Rh
 # bXBpbmcgQ0ECEAVEr/OUnQg5pr/bP1/lYRYwDQYJYIZIAWUDBAIBBQCgaTAYBgkq
-# hkiG9w0BCQMxCwYJKoZIhvcNAQcBMBwGCSqGSIb3DQEJBTEPFw0yMzEwMDYxMDAw
-# MDZaMC8GCSqGSIb3DQEJBDEiBCBMtZ9efaq9SlGDn5LYoYPeFhtxa91a3YP7r2+L
-# vBkUAzANBgkqhkiG9w0BAQEFAASCAgAk0VYNXW7NjLNSh/qpCNpRcWaEFdojdjBK
-# Uz4g7DoF5rOs481cfzmyNRnInbjEjsfOiZKV6a+PhllM43IrvhfjGTB4rgi+LcA4
-# tuT80qM5+xWkTLJLRq0reUU9mNx0nSSfysni+1bb2yotkzRrzc75MNaZOCTR6TAD
-# IC0UlnDA5gDrKgCC6SiG/Z3uWn0dNjw1RwZxUNO34W9M1DioWzw6KQzxmYD8Uf2c
-# H166E5YqHVpe1uEjuWgEUDj5o++uT03OSYh1y/eTzOXuAI6xGNSiV7qFX3CttZg2
-# bPpiEHgUfqG3tjls6tgPZbFdq6pLAnNTLLbascPO/44eChjj7+z5Uktw+8L1bvxF
-# 8kkNUtjbadNVnc5g2c3twoFTG4UGWAtOexvK1dkF32wZF3JyeMVsT3RpZJ/ceEff
-# 7NnqNX6g+SgHMoPJJZXPS0VWagoRFM5wDxvH7PeTSY12XfUml9/WUE2nYL+H/+Nv
-# N5sd6Jh94EXgj2jQi3/H0fnoAkxXsSPZFpQzaFFbGVeTzc9d5sx6KjrhUP6/BzMQ
-# eP/xFb64i8t0Od38nQpIndE3sEOSGXMgLWODJP+kPkW7yLogZ0BbZ5exIEjcCx3i
-# Ax0KRlTlUpzeCpxTAdaBGGM+VWJCAhOo3PXt68faHixsbXL+ami/hRNCc5B1tcJI
-# eSnAj9KwAA==
+# hkiG9w0BCQMxCwYJKoZIhvcNAQcBMBwGCSqGSIb3DQEJBTEPFw0yMzEwMDYxMTAw
+# MDVaMC8GCSqGSIb3DQEJBDEiBCB0dXsR/EPuQZpx0nakHYJRRk6jj2i7V/SppqmY
+# ZQnxKzANBgkqhkiG9w0BAQEFAASCAgCL6PJ4BRXHFzDOOwW4FIWVMt5f2Hvgoifd
+# 47RPv3Ch0jMfh9DZB2dVyas35pCzgS0KaQgnNQQ97Vj1+mLAmISLUXyLuuGqGOBo
+# uNv4BINpq8beqA7bBAZLxHDvgpEd/9OnLftQm+LYbubu7+bH4oHfWrTzuPF5Wsd5
+# wQ+P8zugN0SKsNRQK7MTsxNUpXKaCaNTDkdN1jNSnw5s1coLIIvw9qaJ+7Yc3OWX
+# MD/cZM58V2Z/QXBHl0RLG4+43tEIiH3wPJAO1+YSQ1GG5U+NzvnZBQ6Db5dV7NXr
+# RJhZB6yz1Bw2LQQsTYlVZyPBBU7heGTJRyaXq+ZrVa6BeP4Sm9Lj9cg7/Lhbidqu
+# Lf8W4lsMG5Hh/a7z5w5IK/iz6w3tv1LaBc5pZoSVVhVnCsrxdWdXLhqxE0kRs9CL
+# 9zCcLq1AzqBKGz2gKf1t5nUyjyQ1mGfCgAQTPvCdxX7E1vLojD7fjA+CgE0VBZIc
+# /GFTK4mlrO7wToHz09EMEYFRpcfgubx4+R6BhMc4d6qBQxoB9oU9OHOtSjkJxtSv
+# p0g3bl20N2zYJz1xkQOSn/UoOFAKary+bn3J1cctg+ujW+DwKCyhGnADVPypup4B
+# V1YD5F7eosZP9LQ2arnjKHkOlAVr9bykBDOkEX9n3bIr9cGSkd9yObMC3rjnhKmg
+# ZYu8jpr18Q==
 # SIG # End signature block
